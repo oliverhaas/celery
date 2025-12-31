@@ -39,6 +39,7 @@ from celery.utils.objects import FallbackContext, mro_lookup
 from celery.utils.time import maybe_make_aware, timezone, to_utc
 
 from ..utils.annotations import annotation_is_class, annotation_issubclass, get_optional_arg
+from ..utils.native_delayed_delivery import DELAY_HEADER, should_use_native_delayed_delivery
 from ..utils.quorum_queues import detect_quorum_queues
 # Load all builtin tasks
 from . import backends, builtins  # noqa
@@ -849,8 +850,28 @@ class Celery:
         options = router.route(
             options, route_name or name, args, kwargs, task_type)
 
-        driver_type = self.producer_pool.connections.connection.transport.driver_type
+        transport = self.producer_pool.connections.connection.transport
+        driver_type = transport.driver_type
 
+        # Add delay header for transports that support native delayed delivery.
+        # This is additive - the existing quorum queue routing logic also runs below.
+        if (eta or countdown) and should_use_native_delayed_delivery(self, transport):
+            # Calculate delay in seconds
+            if eta:
+                if isinstance(eta, str):
+                    _eta = isoparse(eta)
+                else:
+                    _eta = eta
+                delay_seconds = (maybe_make_aware(_eta) - self.now()).total_seconds()
+            else:
+                delay_seconds = countdown
+
+            if delay_seconds and delay_seconds > 0:
+                # Add delay header - transport reads this during publish
+                options.setdefault('headers', {})
+                options['headers'][DELAY_HEADER] = delay_seconds
+
+        # Existing quorum queue handling for RabbitMQ (backward compatibility)
         if (eta or countdown) and detect_quorum_queues(self, driver_type)[0]:
 
             queue = options.get("queue")
