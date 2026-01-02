@@ -958,6 +958,38 @@ class Celery:
                 parent.add_trail(result)
         return result
 
+    async def asend_task(self, name, args=None, kwargs=None, countdown=None,
+                         eta=None, task_id=None, producer=None, connection=None,
+                         router=None, result_cls=None, expires=None,
+                         publisher=None, link=None, link_error=None,
+                         add_to_parent=True, group_id=None, group_index=None,
+                         retries=0, chord=None,
+                         reply_to=None, time_limit=None, soft_time_limit=None,
+                         root_id=None, parent_id=None, route_name=None,
+                         shadow=None, chain=None, task_type=None, replaced_task_nesting=0, **options):
+        """Async version of :meth:`send_task`.
+
+        Send task by name.
+
+        This is the asyncio-compatible version that wraps the synchronous
+        :meth:`send_task` method using asgiref's sync_to_async.
+
+        Arguments and return value are the same as :meth:`send_task`.
+        """
+        from asgiref.sync import sync_to_async
+        return await sync_to_async(self.send_task, thread_sensitive=False)(
+            name, args=args, kwargs=kwargs, countdown=countdown,
+            eta=eta, task_id=task_id, producer=producer, connection=connection,
+            router=router, result_cls=result_cls, expires=expires,
+            publisher=publisher, link=link, link_error=link_error,
+            add_to_parent=add_to_parent, group_id=group_id, group_index=group_index,
+            retries=retries, chord=chord,
+            reply_to=reply_to, time_limit=time_limit, soft_time_limit=soft_time_limit,
+            root_id=root_id, parent_id=parent_id, route_name=route_name,
+            shadow=shadow, chain=chain, task_type=task_type,
+            replaced_task_nesting=replaced_task_nesting, **options
+        )
+
     def connection_for_read(self, url=None, **kwargs):
         """Establish connection used for consuming.
 

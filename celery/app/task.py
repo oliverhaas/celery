@@ -443,6 +443,21 @@ class Task:
         """
         return self.apply_async(args, kwargs)
 
+    async def adelay(self, *args, **kwargs):
+        """Async version of :meth:`delay`.
+
+        Star argument version of :meth:`aapply_async`.
+
+        Does not support the extra options enabled by :meth:`aapply_async`.
+
+        Arguments:
+            *args (Any): Positional arguments passed on to the task.
+            **kwargs (Any): Keyword arguments passed on to the task.
+        Returns:
+            celery.result.AsyncResult: Future promise.
+        """
+        return await self.aapply_async(args, kwargs)
+
     def apply_async(self, args=None, kwargs=None, task_id=None, producer=None,
                     link=None, link_error=None, shadow=None, **options):
         """Apply tasks asynchronously by sending a message.
@@ -612,6 +627,23 @@ class Task:
                 **options
             )
 
+    async def aapply_async(self, args=None, kwargs=None, task_id=None, producer=None,
+                           link=None, link_error=None, shadow=None, **options):
+        """Async version of :meth:`apply_async`.
+
+        Apply tasks asynchronously by sending a message.
+
+        This is the asyncio-compatible version that wraps the synchronous
+        :meth:`apply_async` method using asgiref's sync_to_async.
+
+        Arguments and return value are the same as :meth:`apply_async`.
+        """
+        from asgiref.sync import sync_to_async
+        return await sync_to_async(self.apply_async, thread_sensitive=False)(
+            args=args, kwargs=kwargs, task_id=task_id, producer=producer,
+            link=link, link_error=link_error, shadow=shadow, **options
+        )
+
     def shadow_name(self, args, kwargs, options):
         """Override for custom task name in worker logs/monitoring.
 
@@ -771,6 +803,23 @@ class Task:
             raise ret
         return ret
 
+    async def aretry(self, args=None, kwargs=None, exc=None, throw=True,
+                     eta=None, countdown=None, max_retries=None, **options):
+        """Async version of :meth:`retry`.
+
+        Retry the task, adding it to the back of the queue.
+
+        This is the asyncio-compatible version that wraps the synchronous
+        :meth:`retry` method using asgiref's sync_to_async.
+
+        Arguments and return value are the same as :meth:`retry`.
+        """
+        from asgiref.sync import sync_to_async
+        return await sync_to_async(self.retry, thread_sensitive=False)(
+            args=args, kwargs=kwargs, exc=exc, throw=throw,
+            eta=eta, countdown=countdown, max_retries=max_retries, **options
+        )
+
     def apply(self, args=None, kwargs=None,
               link=None, link_error=None,
               task_id=None, retries=None, throw=None,
@@ -850,6 +899,26 @@ class Task:
             return retval.sig.apply(retries=retries + 1)
         state = states.SUCCESS if ret.info is None else ret.info.state
         return EagerResult(task_id, retval, state, traceback=tb, name=self.name)
+
+    async def aapply(self, args=None, kwargs=None,
+                     link=None, link_error=None,
+                     task_id=None, retries=None, throw=None,
+                     logfile=None, loglevel=None, headers=None, **options):
+        """Async version of :meth:`apply`.
+
+        Execute this task locally, by blocking until the task returns.
+
+        This is the asyncio-compatible version that wraps the synchronous
+        :meth:`apply` method using asgiref's sync_to_async.
+
+        Arguments and return value are the same as :meth:`apply`.
+        """
+        from asgiref.sync import sync_to_async
+        return await sync_to_async(self.apply, thread_sensitive=False)(
+            args=args, kwargs=kwargs, link=link, link_error=link_error,
+            task_id=task_id, retries=retries, throw=throw,
+            logfile=logfile, loglevel=loglevel, headers=headers, **options
+        )
 
     def AsyncResult(self, task_id, **kwargs):
         """Get AsyncResult instance for the specified task.

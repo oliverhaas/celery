@@ -352,6 +352,13 @@ class Signature(dict):
         """Shortcut to :meth:`apply_async` using star arguments."""
         return self.apply_async(partial_args, partial_kwargs)
 
+    async def adelay(self, *partial_args, **partial_kwargs):
+        """Async version of :meth:`delay`.
+
+        Shortcut to :meth:`aapply_async` using star arguments.
+        """
+        return await self.aapply_async(partial_args, partial_kwargs)
+
     def apply(self, args=None, kwargs=None, **options):
         """Call task locally.
 
@@ -365,6 +372,21 @@ class Signature(dict):
         # For callbacks: extra args are prepended to the stored args.
         args, kwargs, options = self._merge(args, kwargs, options)
         return self.type.apply(args, kwargs, **options)
+
+    async def aapply(self, args=None, kwargs=None, **options):
+        """Async version of :meth:`apply`.
+
+        Call task locally.
+
+        This is the asyncio-compatible version that wraps the synchronous
+        :meth:`apply` method using asgiref's sync_to_async.
+
+        Arguments and return value are the same as :meth:`apply`.
+        """
+        from asgiref.sync import sync_to_async
+        return await sync_to_async(self.apply, thread_sensitive=False)(
+            args=args, kwargs=kwargs, **options
+        )
 
     def apply_async(self, args=None, kwargs=None, route_name=None, **options):
         """Apply this task asynchronously.
@@ -398,6 +420,21 @@ class Signature(dict):
         # pylint: disable=too-many-function-args
         #   Works on this, as it's a property
         return _apply(args, kwargs, **options)
+
+    async def aapply_async(self, args=None, kwargs=None, route_name=None, **options):
+        """Async version of :meth:`apply_async`.
+
+        Apply this task asynchronously.
+
+        This is the asyncio-compatible version that wraps the synchronous
+        :meth:`apply_async` method using asgiref's sync_to_async.
+
+        Arguments and return value are the same as :meth:`apply_async`.
+        """
+        from asgiref.sync import sync_to_async
+        return await sync_to_async(self.apply_async, thread_sensitive=False)(
+            args=args, kwargs=kwargs, route_name=route_name, **options
+        )
 
     def _merge(self, args=None, kwargs=None, options=None, force=False):
         """Merge partial args/kwargs/options with existing ones.
@@ -1042,6 +1079,19 @@ class _chain(Signature):
         return self.run(args, kwargs, app=app, **(
             dict(self.options, **options) if options else self.options))
 
+    async def aapply_async(self, args=None, kwargs=None, **options):
+        """Async version of :meth:`apply_async`.
+
+        This is the asyncio-compatible version that wraps the synchronous
+        :meth:`apply_async` method using asgiref's sync_to_async.
+
+        Arguments and return value are the same as :meth:`apply_async`.
+        """
+        from asgiref.sync import sync_to_async
+        return await sync_to_async(self.apply_async, thread_sensitive=False)(
+            args=args, kwargs=kwargs, **options
+        )
+
     def run(self, args=None, kwargs=None, group_id=None, chord=None,
             task_id=None, link=None, link_error=None, publisher=None,
             producer=None, root_id=None, parent_id=None, app=None,
@@ -1287,6 +1337,19 @@ class _chain(Signature):
             res.parent, last, (fargs, fkwargs) = last, res, (None, None)
         return last
 
+    async def aapply(self, args=None, kwargs=None, **options):
+        """Async version of :meth:`apply`.
+
+        This is the asyncio-compatible version that wraps the synchronous
+        :meth:`apply` method using asgiref's sync_to_async.
+
+        Arguments and return value are the same as :meth:`apply`.
+        """
+        from asgiref.sync import sync_to_async
+        return await sync_to_async(self.apply, thread_sensitive=False)(
+            args=args, kwargs=kwargs, **options
+        )
+
     @property
     def app(self):
         app = self._app
@@ -1391,6 +1454,19 @@ class _basemap(Signature):
             route_name=task_name_from(self.kwargs.get('task')), **opts
         )
 
+    async def aapply_async(self, args=None, kwargs=None, **opts):
+        """Async version of :meth:`apply_async`.
+
+        This is the asyncio-compatible version that wraps the synchronous
+        :meth:`apply_async` method using asgiref's sync_to_async.
+
+        Arguments and return value are the same as :meth:`apply_async`.
+        """
+        from asgiref.sync import sync_to_async
+        return await sync_to_async(self.apply_async, thread_sensitive=False)(
+            args=args, kwargs=kwargs, **opts
+        )
+
 
 @Signature.register_type()
 class xmap(_basemap):
@@ -1444,6 +1520,19 @@ class chunks(Signature):
         return self.group().apply_async(
             args, kwargs,
             route_name=task_name_from(self.kwargs.get('task')), **opts
+        )
+
+    async def aapply_async(self, args=None, kwargs=None, **opts):
+        """Async version of :meth:`apply_async`.
+
+        This is the asyncio-compatible version that wraps the synchronous
+        :meth:`apply_async` method using asgiref's sync_to_async.
+
+        Arguments and return value are the same as :meth:`apply_async`.
+        """
+        from asgiref.sync import sync_to_async
+        return await sync_to_async(self.apply_async, thread_sensitive=False)(
+            args=args, kwargs=kwargs, **opts
         )
 
     def group(self):
@@ -1639,6 +1728,34 @@ class group(Signature):
         return app.GroupResult(group_id, [
             sig.apply(args=args, kwargs=kwargs, **options) for sig, _, _ in tasks
         ])
+
+    async def aapply_async(self, args=None, kwargs=None, add_to_parent=True,
+                           producer=None, link=None, link_error=None, **options):
+        """Async version of :meth:`apply_async`.
+
+        This is the asyncio-compatible version that wraps the synchronous
+        :meth:`apply_async` method using asgiref's sync_to_async.
+
+        Arguments and return value are the same as :meth:`apply_async`.
+        """
+        from asgiref.sync import sync_to_async
+        return await sync_to_async(self.apply_async, thread_sensitive=False)(
+            args=args, kwargs=kwargs, add_to_parent=add_to_parent,
+            producer=producer, link=link, link_error=link_error, **options
+        )
+
+    async def aapply(self, args=None, kwargs=None, **options):
+        """Async version of :meth:`apply`.
+
+        This is the asyncio-compatible version that wraps the synchronous
+        :meth:`apply` method using asgiref's sync_to_async.
+
+        Arguments and return value are the same as :meth:`apply`.
+        """
+        from asgiref.sync import sync_to_async
+        return await sync_to_async(self.apply, thread_sensitive=False)(
+            args=args, kwargs=kwargs, **options
+        )
 
     def set_immutable(self, immutable):
         for task in self.tasks:
@@ -2164,6 +2281,37 @@ class _chord(Signature):
                  else group(self.tasks, app=self.app))
         return body.apply(
             args=(tasks.apply(args, kwargs).get(propagate=propagate),),
+        )
+
+    async def aapply_async(self, args=None, kwargs=None, task_id=None,
+                           producer=None, publisher=None, connection=None,
+                           router=None, result_cls=None, **options):
+        """Async version of :meth:`apply_async`.
+
+        This is the asyncio-compatible version that wraps the synchronous
+        :meth:`apply_async` method using asgiref's sync_to_async.
+
+        Arguments and return value are the same as :meth:`apply_async`.
+        """
+        from asgiref.sync import sync_to_async
+        return await sync_to_async(self.apply_async, thread_sensitive=False)(
+            args=args, kwargs=kwargs, task_id=task_id,
+            producer=producer, publisher=publisher, connection=connection,
+            router=router, result_cls=result_cls, **options
+        )
+
+    async def aapply(self, args=None, kwargs=None,
+                     propagate=True, body=None, **options):
+        """Async version of :meth:`apply`.
+
+        This is the asyncio-compatible version that wraps the synchronous
+        :meth:`apply` method using asgiref's sync_to_async.
+
+        Arguments and return value are the same as :meth:`apply`.
+        """
+        from asgiref.sync import sync_to_async
+        return await sync_to_async(self.apply, thread_sensitive=False)(
+            args=args, kwargs=kwargs, propagate=propagate, body=body, **options
         )
 
     @classmethod
