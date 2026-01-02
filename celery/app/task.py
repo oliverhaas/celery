@@ -576,6 +576,24 @@ class Task:
             Also supports all keyword arguments supported by
             :meth:`kombu.Producer.publish`.
         """
+        return self._apply_async_impl(
+            args=args, kwargs=kwargs, task_id=task_id, producer=producer,
+            link=link, link_error=link_error, shadow=shadow, **options
+        )
+
+    def _prepare_apply_async(self, args=None, kwargs=None, shadow=None, **options):
+        """Prepare for apply_async without performing I/O.
+
+        This method handles validation and option merging. It is shared
+        by both sync and async apply_async implementations.
+
+        Returns:
+            tuple: (args, kwargs, shadow, options, app) with prepared values.
+
+        Raises:
+            ValueError: If soft_time_limit > time_limit.
+            TypeError: If typing is enabled and arguments don't match signature.
+        """
         if self.soft_time_limit and self.time_limit and self.soft_time_limit > self.time_limit:
             raise ValueError('soft_time_limit must be less than or equal to time_limit')
 
@@ -600,6 +618,18 @@ class Task:
             options.setdefault('priority', self.priority)
 
         app = self._get_app()
+        return args, kwargs, shadow, options, app
+
+    def _apply_async_impl(self, args=None, kwargs=None, task_id=None, producer=None,
+                          link=None, link_error=None, shadow=None, **options):
+        """Internal implementation of apply_async.
+
+        Separated to allow async version to share preparation logic.
+        """
+        args, kwargs, shadow, options, app = self._prepare_apply_async(
+            args=args, kwargs=kwargs, shadow=shadow, **options
+        )
+
         if app.conf.task_always_eager:
             with app.producer_or_acquire(producer) as eager_producer:
                 serializer = options.get('serializer')
@@ -633,16 +663,51 @@ class Task:
 
         Apply tasks asynchronously by sending a message.
 
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`apply_async` method using asgiref's sync_to_async.
+        This method shares validation and preparation logic with :meth:`apply_async`,
+        only wrapping the actual I/O operations with sync_to_async. For the normal
+        path (not task_always_eager), it delegates to :meth:`app.asend_task` which
+        has the same shared-core design.
 
         Arguments and return value are the same as :meth:`apply_async`.
         """
         from asgiref.sync import sync_to_async
-        return await sync_to_async(self.apply_async, thread_sensitive=False)(
-            args=args, kwargs=kwargs, task_id=task_id, producer=producer,
-            link=link, link_error=link_error, shadow=shadow, **options
+
+        # Prepare (no I/O) - runs synchronously
+        args, kwargs, shadow, options, app = self._prepare_apply_async(
+            args=args, kwargs=kwargs, shadow=shadow, **options
         )
+
+        if app.conf.task_always_eager:
+            # Eager mode: wrap the I/O parts (producer acquisition, serialization check)
+            def _eager_apply():
+                with app.producer_or_acquire(producer) as eager_producer:
+                    serializer = options.get('serializer')
+                    if serializer is None:
+                        if eager_producer.serializer:
+                            serializer = eager_producer.serializer
+                        else:
+                            serializer = app.conf.task_serializer
+                    body = args, kwargs
+                    content_type, content_encoding, data = serialization.dumps(
+                        body, serializer,
+                    )
+                    return serialization.loads(
+                        data, content_type, content_encoding,
+                        accept=[content_type]
+                    )
+
+            eager_args, eager_kwargs = await sync_to_async(_eager_apply, thread_sensitive=False)()
+            with denied_join_result():
+                return self.apply(eager_args, eager_kwargs, task_id=task_id or uuid(),
+                                  link=link, link_error=link_error, **options)
+        else:
+            # Normal path: delegate to asend_task which has its own shared-core design
+            return await app.asend_task(
+                self.name, args, kwargs, task_id=task_id, producer=producer,
+                link=link, link_error=link_error, result_cls=self.AsyncResult,
+                shadow=shadow, task_type=self,
+                **options
+            )
 
     def shadow_name(self, args, kwargs, options):
         """Override for custom task name in worker logs/monitoring.

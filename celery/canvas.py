@@ -388,6 +388,27 @@ class Signature(dict):
             args=args, kwargs=kwargs, **options
         )
 
+    def _prepare_apply_async(self, args=None, kwargs=None, route_name=None, **options):
+        """Prepare arguments for apply_async without performing I/O.
+
+        This method handles argument merging and is shared by both sync
+        and async apply_async implementations.
+
+        Returns:
+            tuple: (args, kwargs, options) ready for task dispatch,
+                   or None if no tasks available.
+        """
+        args = args if args else ()
+        kwargs = kwargs if kwargs else {}
+        # Extra options set to None are dismissed
+        options = {k: v for k, v in options.items() if v is not None}
+        # For callbacks: extra args are prepended to the stored args.
+        if args or kwargs or options:
+            args, kwargs, options = self._merge(args, kwargs, options)
+        else:
+            args, kwargs, options = self.args, self.kwargs, self.options
+        return args, kwargs, options
+
     def apply_async(self, args=None, kwargs=None, route_name=None, **options):
         """Apply this task asynchronously.
 
@@ -403,20 +424,14 @@ class Signature(dict):
         See also:
             :meth:`~@Task.apply_async` and the :ref:`guide-calling` guide.
         """
-        args = args if args else ()
-        kwargs = kwargs if kwargs else {}
-        # Extra options set to None are dismissed
-        options = {k: v for k, v in options.items() if v is not None}
         try:
             _apply = self._apply_async
         except IndexError:  # pragma: no cover
             # no tasks for chain, etc to find type
             return
-        # For callbacks: extra args are prepended to the stored args.
-        if args or kwargs or options:
-            args, kwargs, options = self._merge(args, kwargs, options)
-        else:
-            args, kwargs, options = self.args, self.kwargs, self.options
+        args, kwargs, options = self._prepare_apply_async(
+            args=args, kwargs=kwargs, route_name=route_name, **options
+        )
         # pylint: disable=too-many-function-args
         #   Works on this, as it's a property
         return _apply(args, kwargs, **options)
@@ -426,15 +441,20 @@ class Signature(dict):
 
         Apply this task asynchronously.
 
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`apply_async` method using asgiref's sync_to_async.
+        This method shares argument preparation logic with :meth:`apply_async`,
+        and delegates to the task's async apply method for the actual I/O.
 
         Arguments and return value are the same as :meth:`apply_async`.
         """
-        from asgiref.sync import sync_to_async
-        return await sync_to_async(self.apply_async, thread_sensitive=False)(
+        try:
+            _aapply = self._aapply_async
+        except IndexError:  # pragma: no cover
+            # no tasks for chain, etc to find type
+            return
+        args, kwargs, options = self._prepare_apply_async(
             args=args, kwargs=kwargs, route_name=route_name, **options
         )
+        return await _aapply(args, kwargs, **options)
 
     def _merge(self, args=None, kwargs=None, options=None, force=False):
         """Merge partial args/kwargs/options with existing ones.
@@ -896,6 +916,13 @@ class Signature(dict):
         except KeyError:
             return _partial(self.app.send_task, self['task'])
 
+    @cached_property
+    def _aapply_async(self):
+        try:
+            return self.type.aapply_async
+        except KeyError:
+            return _partial(self.app.asend_task, self['task'])
+
     id = getitem_property('options.task_id', 'Task UUID')
     parent_id = getitem_property('options.parent_id', 'Task parent UUID.')
     root_id = getitem_property('options.root_id', 'Task root UUID.')
@@ -1067,40 +1094,60 @@ class _chain(Signature):
                 task.link_error(sig)
         return tasks
 
-    def apply_async(self, args=None, kwargs=None, **options):
-        # python is best at unpacking kwargs, so .run is here to do that.
+    def _prepare_apply_async(self, args=None, kwargs=None, **options):
+        """Prepare arguments for apply_async without performing I/O.
+
+        Returns:
+            tuple: (args, kwargs, app, merged_options) ready for run().
+        """
         args = args if args else ()
         kwargs = kwargs if kwargs else []
         app = self.app
+        merged_options = dict(self.options, **options) if options else self.options
+        return args, kwargs, app, merged_options
+
+    def apply_async(self, args=None, kwargs=None, **options):
+        # python is best at unpacking kwargs, so .run is here to do that.
+        args, kwargs, app, merged_options = self._prepare_apply_async(
+            args=args, kwargs=kwargs, **options
+        )
 
         if app.conf.task_always_eager:
             with allow_join_result():
                 return self.apply(args, kwargs, **options)
-        return self.run(args, kwargs, app=app, **(
-            dict(self.options, **options) if options else self.options))
+        return self.run(args, kwargs, app=app, **merged_options)
 
     async def aapply_async(self, args=None, kwargs=None, **options):
         """Async version of :meth:`apply_async`.
 
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`apply_async` method using asgiref's sync_to_async.
+        This method shares preparation logic with :meth:`apply_async` and
+        delegates to :meth:`arun` for async task execution.
 
         Arguments and return value are the same as :meth:`apply_async`.
         """
         from asgiref.sync import sync_to_async
-        return await sync_to_async(self.apply_async, thread_sensitive=False)(
+
+        args, kwargs, app, merged_options = self._prepare_apply_async(
             args=args, kwargs=kwargs, **options
         )
 
-    def run(self, args=None, kwargs=None, group_id=None, chord=None,
-            task_id=None, link=None, link_error=None, publisher=None,
-            producer=None, root_id=None, parent_id=None, app=None,
-            group_index=None, **options):
-        """Executes the chain.
+        if app.conf.task_always_eager:
+            # Eager mode still uses sync apply (local execution)
+            with allow_join_result():
+                return await sync_to_async(self.apply, thread_sensitive=False)(
+                    args, kwargs, **options
+                )
+        return await self.arun(args, kwargs, app=app, **merged_options)
 
-        Responsible for executing the chain in the correct order.
-        In a case of a chain of a single task, the task is executed directly
-        and the result is returned for that task specifically.
+    def _prepare_run(self, args=None, kwargs=None, group_id=None, chord=None,
+                     task_id=None, link=None, link_error=None, publisher=None,
+                     producer=None, root_id=None, parent_id=None, app=None,
+                     group_index=None, **options):
+        """Prepare chain execution without performing I/O.
+
+        Returns:
+            tuple: (first_task, tasks, results_from_prepare, options) or
+                   (None, None, None, None) if nothing to execute.
         """
         # pylint: disable=redefined-outer-name
         #   XXX chord is also a class in outer scope.
@@ -1119,24 +1166,72 @@ class _chain(Signature):
             task_id, group_id, chord, group_index=group_index,
         )
 
+        if not results_from_prepare:
+            return None, None, None, None
+
+        if link:
+            tasks[0].extend_list_option('link', link)
+        first_task = tasks.pop()
+        options = _prepare_chain_from_options(options, tasks, use_link)
+
+        return first_task, tasks, results_from_prepare, options
+
+    def run(self, args=None, kwargs=None, group_id=None, chord=None,
+            task_id=None, link=None, link_error=None, publisher=None,
+            producer=None, root_id=None, parent_id=None, app=None,
+            group_index=None, **options):
+        """Executes the chain.
+
+        Responsible for executing the chain in the correct order.
+        In a case of a chain of a single task, the task is executed directly
+        and the result is returned for that task specifically.
+        """
+        first_task, tasks, results_from_prepare, options = self._prepare_run(
+            args=args, kwargs=kwargs, group_id=group_id, chord=chord,
+            task_id=task_id, link=link, link_error=link_error, publisher=publisher,
+            producer=producer, root_id=root_id, parent_id=parent_id, app=app,
+            group_index=group_index, **options
+        )
+
+        if first_task is None:
+            return None
+
         # For a chain of single task, execute the task directly and return the result for that task
         # For a chain of multiple tasks, execute all of the tasks and return the AsyncResult for the chain
-        if results_from_prepare:
-            if link:
-                tasks[0].extend_list_option('link', link)
-            first_task = tasks.pop()
-            options = _prepare_chain_from_options(options, tasks, use_link)
+        result_from_apply = first_task.apply_async(**options)
+        # If we only have a single task, it may be important that we pass
+        # the real result object rather than the one obtained via freezing.
+        # e.g. For `GroupResult`s, we need to pass back the result object
+        # which will actually have its promise fulfilled by the subtasks,
+        # something that will never occur for the frozen result.
+        if not tasks:
+            return result_from_apply
+        else:
+            return results_from_prepare[0]
 
-            result_from_apply = first_task.apply_async(**options)
-            # If we only have a single task, it may be important that we pass
-            # the real result object rather than the one obtained via freezing.
-            # e.g. For `GroupResult`s, we need to pass back the result object
-            # which will actually have its promise fulfilled by the subtasks,
-            # something that will never occur for the frozen result.
-            if not tasks:
-                return result_from_apply
-            else:
-                return results_from_prepare[0]
+    async def arun(self, args=None, kwargs=None, group_id=None, chord=None,
+                   task_id=None, link=None, link_error=None, publisher=None,
+                   producer=None, root_id=None, parent_id=None, app=None,
+                   group_index=None, **options):
+        """Async version of :meth:`run`.
+
+        Executes the chain asynchronously.
+        """
+        first_task, tasks, results_from_prepare, options = self._prepare_run(
+            args=args, kwargs=kwargs, group_id=group_id, chord=chord,
+            task_id=task_id, link=link, link_error=link_error, publisher=publisher,
+            producer=producer, root_id=root_id, parent_id=parent_id, app=app,
+            group_index=group_index, **options
+        )
+
+        if first_task is None:
+            return None
+
+        result_from_apply = await first_task.aapply_async(**options)
+        if not tasks:
+            return result_from_apply
+        else:
+            return results_from_prepare[0]
 
     # in order for a chain to be frozen, each of the members of the chain individually needs to be frozen
     # TODO figure out why we are always cloning before freeze
@@ -1444,27 +1539,33 @@ class _basemap(Signature):
                          {'task': task, 'it': regen(it)}, immutable=True, **options
                          )
 
-    def apply_async(self, args=None, kwargs=None, **opts):
-        # need to evaluate generators
+    def _prepare_apply_async(self, args=None, kwargs=None, **opts):
+        """Prepare arguments for apply_async without performing I/O."""
         args = args if args else ()
         kwargs = kwargs if kwargs else {}
         task, it = self._unpack_args(self.kwargs)
+        return task, list(it), opts
+
+    def apply_async(self, args=None, kwargs=None, **opts):
+        # need to evaluate generators
+        task, it_list, opts = self._prepare_apply_async(args=args, kwargs=kwargs, **opts)
         return self.type.apply_async(
-            (), {'task': task, 'it': list(it)},
+            (), {'task': task, 'it': it_list},
             route_name=task_name_from(self.kwargs.get('task')), **opts
         )
 
     async def aapply_async(self, args=None, kwargs=None, **opts):
         """Async version of :meth:`apply_async`.
 
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`apply_async` method using asgiref's sync_to_async.
+        This method shares preparation logic with :meth:`apply_async` and
+        delegates to the task's async apply method for the actual I/O.
 
         Arguments and return value are the same as :meth:`apply_async`.
         """
-        from asgiref.sync import sync_to_async
-        return await sync_to_async(self.apply_async, thread_sensitive=False)(
-            args=args, kwargs=kwargs, **opts
+        task, it_list, opts = self._prepare_apply_async(args=args, kwargs=kwargs, **opts)
+        return await self.type.aapply_async(
+            (), {'task': task, 'it': it_list},
+            route_name=task_name_from(self.kwargs.get('task')), **opts
         )
 
 
@@ -1514,9 +1615,14 @@ class chunks(Signature):
     def __call__(self, **options):
         return self.apply_async(**options)
 
-    def apply_async(self, args=None, kwargs=None, **opts):
+    def _prepare_apply_async(self, args=None, kwargs=None, **opts):
+        """Prepare arguments for apply_async without performing I/O."""
         args = args if args else ()
         kwargs = kwargs if kwargs else {}
+        return args, kwargs, opts
+
+    def apply_async(self, args=None, kwargs=None, **opts):
+        args, kwargs, opts = self._prepare_apply_async(args=args, kwargs=kwargs, **opts)
         return self.group().apply_async(
             args, kwargs,
             route_name=task_name_from(self.kwargs.get('task')), **opts
@@ -1525,14 +1631,15 @@ class chunks(Signature):
     async def aapply_async(self, args=None, kwargs=None, **opts):
         """Async version of :meth:`apply_async`.
 
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`apply_async` method using asgiref's sync_to_async.
+        This method shares preparation logic with :meth:`apply_async` and
+        delegates to the group's async apply method for the actual I/O.
 
         Arguments and return value are the same as :meth:`apply_async`.
         """
-        from asgiref.sync import sync_to_async
-        return await sync_to_async(self.apply_async, thread_sensitive=False)(
-            args=args, kwargs=kwargs, **opts
+        args, kwargs, opts = self._prepare_apply_async(args=args, kwargs=kwargs, **opts)
+        return await self.group().aapply_async(
+            args, kwargs,
+            route_name=task_name_from(self.kwargs.get('task')), **opts
         )
 
     def group(self):
@@ -1681,8 +1788,15 @@ class group(Signature):
             task.set(countdown=next(it))
         return self
 
-    def apply_async(self, args=None, kwargs=None, add_to_parent=True,
-                    producer=None, link=None, link_error=None, **options):
+    def _prepare_apply_async(self, args=None, kwargs=None, add_to_parent=True,
+                              producer=None, link=None, link_error=None, **options):
+        """Prepare group for apply_async without performing I/O.
+
+        Returns:
+            tuple: (args, app, options, group_id, tasks, add_to_parent) or
+                   raises TypeError for invalid options, or
+                   (None, app, None, None, None, None) for empty/eager cases.
+        """
         args = args if args else ()
         if link is not None:
             raise TypeError('Cannot add link to group: use a chord')
@@ -1690,13 +1804,28 @@ class group(Signature):
             raise TypeError(
                 'Cannot add link to group: do that on individual tasks')
         app = self.app
-        if app.conf.task_always_eager:
-            return self.apply(args, kwargs, **options)
         if not self.tasks:
-            return self.freeze()
+            return None, app, None, None, None, add_to_parent
 
         options, group_id, root_id = self._freeze_gid(options)
         tasks = self._prepared(self.tasks, [], group_id, root_id, app)
+        return args, app, options, group_id, tasks, add_to_parent
+
+    def apply_async(self, args=None, kwargs=None, add_to_parent=True,
+                    producer=None, link=None, link_error=None, **options):
+        args, app, options, group_id, tasks, add_to_parent = self._prepare_apply_async(
+            args=args, kwargs=kwargs, add_to_parent=add_to_parent,
+            producer=producer, link=link, link_error=link_error, **options
+        )
+
+        if tasks is None:
+            if app.conf.task_always_eager:
+                return self.apply(args, kwargs, **options) if options else self.apply(args, kwargs)
+            return self.freeze()
+
+        if app.conf.task_always_eager:
+            return self.apply(args, kwargs, **options)
+
         p = barrier()
         results = list(self._apply_tasks(tasks, producer, app, p,
                                          args=args, kwargs=kwargs, **options))
@@ -1733,16 +1862,43 @@ class group(Signature):
                            producer=None, link=None, link_error=None, **options):
         """Async version of :meth:`apply_async`.
 
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`apply_async` method using asgiref's sync_to_async.
+        This method shares preparation logic with :meth:`apply_async` and
+        executes tasks asynchronously using async apply methods.
 
         Arguments and return value are the same as :meth:`apply_async`.
         """
         from asgiref.sync import sync_to_async
-        return await sync_to_async(self.apply_async, thread_sensitive=False)(
+
+        args, app, prep_options, group_id, tasks, add_to_parent = self._prepare_apply_async(
             args=args, kwargs=kwargs, add_to_parent=add_to_parent,
             producer=producer, link=link, link_error=link_error, **options
         )
+
+        if tasks is None:
+            if app.conf.task_always_eager:
+                return await sync_to_async(self.apply, thread_sensitive=False)(
+                    args, kwargs, **options
+                ) if options else await sync_to_async(self.apply, thread_sensitive=False)(args, kwargs)
+            return self.freeze()
+
+        if app.conf.task_always_eager:
+            return await sync_to_async(self.apply, thread_sensitive=False)(
+                args, kwargs, **options
+            )
+
+        p = barrier()
+        results = await self._aapply_tasks(tasks, producer, app, p,
+                                           args=args, kwargs=kwargs, **prep_options)
+        result = self.app.GroupResult(group_id, results, ready_barrier=p)
+        p.finalize()
+
+        if len(result) == 1 and isinstance(result[0], GroupResult):
+            result = result[0]
+
+        parent_task = app.current_worker_task
+        if add_to_parent and parent_task:
+            parent_task.add_trail(result)
+        return result
 
     async def aapply(self, args=None, kwargs=None, **options):
         """Async version of :meth:`apply`.
@@ -1919,6 +2075,56 @@ class group(Signature):
                     res.then(p, weak=True)
                 next_task = next(tasks_shifted, None)
                 yield res  # <-- r.parent, etc set in the frozen result.
+
+    async def _aapply_tasks(self, tasks, producer=None, app=None, p=None,
+                            add_to_parent=None, chord=None,
+                            args=None, kwargs=None, group_index=None, **options):
+        """Async version of :meth:`_apply_tasks`.
+
+        Run all the tasks in the group asynchronously.
+        """
+        from asgiref.sync import sync_to_async
+
+        # pylint: disable=redefined-outer-name
+        #   XXX chord is also a class in outer scope.
+        app = app or self.app
+        results = []
+
+        # The producer_or_acquire context manager is I/O, wrap it
+        def _get_producer():
+            return app.producer_or_acquire(producer).__enter__()
+
+        def _release_producer(p):
+            app.producer_or_acquire(producer).__exit__(None, None, None)
+
+        acquired_producer = await sync_to_async(_get_producer, thread_sensitive=False)()
+        try:
+            chord_size = 0
+            tasks_shifted, tasks = itertools.tee(tasks)
+            next(tasks_shifted, None)
+            next_task = next(tasks_shifted, None)
+
+            for task_index, current_task in enumerate(tasks):
+                sig, res, group_id = current_task
+                chord_obj = chord if chord is not None else sig.options.get("chord")
+                chord_size += _chord._descend(sig)
+                if chord_obj is not None and next_task is None:
+                    app.backend.set_chord_size(group_id, chord_size)
+
+                # Use aapply_async for the actual task dispatch
+                await sig.aapply_async(producer=acquired_producer, add_to_parent=False,
+                                       chord=chord_obj, args=args, kwargs=kwargs,
+                                       **options)
+
+                if p and not p.cancelled and not p.ready:
+                    p.size += 1
+                    res.then(p, weak=True)
+                next_task = next(tasks_shifted, None)
+                results.append(res)
+        finally:
+            await sync_to_async(_release_producer, thread_sensitive=False)(acquired_producer)
+
+        return results
 
     def _freeze_gid(self, options):
         """Freeze the group id by the existing task_id or a new UUID."""
@@ -2246,9 +2452,12 @@ class _chord(Signature):
             headers = self._stamp_headers(visitor_headers, append_stamps, **headers)
             self.body.stamp(visitor, append_stamps, **headers)
 
-    def apply_async(self, args=None, kwargs=None, task_id=None,
-                    producer=None, publisher=None, connection=None,
-                    router=None, result_cls=None, **options):
+    def _prepare_apply_async(self, args=None, kwargs=None, task_id=None, **options):
+        """Prepare chord for apply_async without performing I/O.
+
+        Returns:
+            tuple: (tasks, body, args, task_id, kwargs, merged_options, app)
+        """
         args = args if args else ()
         kwargs = kwargs if kwargs else {}
         args = (tuple(args) + tuple(self.args)
@@ -2259,15 +2468,25 @@ class _chord(Signature):
         app = self._get_app(body)
         tasks = (self.tasks.clone() if isinstance(self.tasks, group)
                  else group(self.tasks, app=app, task_id=self.options.get('task_id', uuid())))
-        if app.conf.task_always_eager:
-            with allow_join_result():
-                return self.apply(args, kwargs,
-                                  body=body, task_id=task_id, **options)
 
         merged_options = dict(self.options, **options) if options else self.options
         option_task_id = merged_options.pop("task_id", None)
         if task_id is None:
             task_id = option_task_id
+
+        return tasks, body, args, task_id, kwargs, merged_options, app
+
+    def apply_async(self, args=None, kwargs=None, task_id=None,
+                    producer=None, publisher=None, connection=None,
+                    router=None, result_cls=None, **options):
+        tasks, body, args, task_id, kwargs, merged_options, app = self._prepare_apply_async(
+            args=args, kwargs=kwargs, task_id=task_id, **options
+        )
+
+        if app.conf.task_always_eager:
+            with allow_join_result():
+                return self.apply(args, kwargs,
+                                  body=body, task_id=task_id, **options)
 
         # chord([A, B, ...], C)
         return self.run(tasks, body, args, task_id=task_id, kwargs=kwargs, **merged_options)
@@ -2288,17 +2507,25 @@ class _chord(Signature):
                            router=None, result_cls=None, **options):
         """Async version of :meth:`apply_async`.
 
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`apply_async` method using asgiref's sync_to_async.
+        This method shares preparation logic with :meth:`apply_async` and
+        delegates to :meth:`arun` for async chord execution.
 
         Arguments and return value are the same as :meth:`apply_async`.
         """
         from asgiref.sync import sync_to_async
-        return await sync_to_async(self.apply_async, thread_sensitive=False)(
-            args=args, kwargs=kwargs, task_id=task_id,
-            producer=producer, publisher=publisher, connection=connection,
-            router=router, result_cls=result_cls, **options
+
+        tasks, body, args, task_id, kwargs, merged_options, app = self._prepare_apply_async(
+            args=args, kwargs=kwargs, task_id=task_id, **options
         )
+
+        if app.conf.task_always_eager:
+            with allow_join_result():
+                return await sync_to_async(self.apply, thread_sensitive=False)(
+                    args, kwargs, body=body, task_id=task_id, **options
+                )
+
+        # chord([A, B, ...], C)
+        return await self.arun(tasks, body, args, task_id=task_id, kwargs=kwargs, **merged_options)
 
     async def aapply(self, args=None, kwargs=None,
                      propagate=True, body=None, **options):
@@ -2407,6 +2634,51 @@ class _chord(Signature):
         # we execute the body manually here.
         else:
             body.delay([])
+            header_result = self.app.GroupResult(*header_result_args)
+
+        bodyres.parent = header_result
+        return bodyres
+
+    async def arun(self, header, body, partial_args, app=None, interval=None,
+                   countdown=1, max_retries=None, eager=False,
+                   task_id=None, kwargs=None, **options):
+        """Async version of :meth:`run`.
+
+        Execute the chord asynchronously.
+        """
+        from asgiref.sync import sync_to_async
+
+        app = app or self._get_app(body)
+        group_id = header.options.get('task_id') or uuid()
+        root_id = body.options.get('root_id')
+        options = dict(self.options, **options) if options else self.options
+        if options:
+            options.pop('task_id', None)
+            body.options.update(options)
+
+        body_task_id = task_id or uuid()
+        bodyres = body.freeze(body_task_id, group_id=group_id, root_id=root_id)
+
+        # Chains should not be passed to the header tasks. See #3771
+        options.pop('chain', None)
+        # Neither should chords, for deeply nested chords to work
+        options.pop('chord', None)
+        options.pop('task_id', None)
+
+        header_result_args = header._freeze_group_tasks(group_id=group_id, chord=body, root_id=root_id)
+
+        if header.tasks:
+            # backend.apply_chord is I/O
+            await sync_to_async(app.backend.apply_chord, thread_sensitive=False)(
+                header_result_args,
+                body,
+                interval=interval,
+                countdown=countdown,
+                max_retries=max_retries,
+            )
+            header_result = await header.aapply_async(partial_args, kwargs, task_id=group_id, **options)
+        else:
+            await body.adelay([])
             header_result = self.app.GroupResult(*header_result_args)
 
         bodyres.parent = header_result

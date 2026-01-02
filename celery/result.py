@@ -187,6 +187,36 @@ class AsyncResult(ResultBase):
                                                    terminate=terminate, signal=signal,
                                                    reply=wait, timeout=timeout)
 
+    def _prepare_get(self, timeout=None, propagate=True, interval=0.5,
+                     no_ack=True, follow_parents=True, callback=None, on_message=None,
+                     on_interval=None, disable_sync_subtasks=True):
+        """Prepare for get() without performing I/O.
+
+        Returns:
+            tuple: (should_wait, _on_interval, cached_result) where:
+                - should_wait: True if we need to wait for pending result
+                - _on_interval: callback promise for interval
+                - cached_result: the cached result if available, None otherwise
+        """
+        if self.ignored:
+            return False, None, None
+
+        if disable_sync_subtasks:
+            assert_will_not_block()
+        _on_interval = promise()
+        if follow_parents and propagate and self.parent:
+            _on_interval = promise(self._maybe_reraise_parent_error, weak=True)
+            self._maybe_reraise_parent_error()
+        if on_interval:
+            _on_interval.then(on_interval)
+
+        if self._cache:
+            if propagate:
+                self.maybe_throw(callback=callback)
+            return False, _on_interval, self.result
+
+        return True, _on_interval, None
+
     def get(self, timeout=None, propagate=True, interval=0.5,
             no_ack=True, follow_parents=True, callback=None, on_message=None,
             on_interval=None, disable_sync_subtasks=True,
@@ -232,22 +262,15 @@ class AsyncResult(ResultBase):
             Exception: If the remote call raised an exception then that
                 exception will be re-raised in the caller process.
         """
-        if self.ignored:
-            return
+        should_wait, _on_interval, cached_result = self._prepare_get(
+            timeout=timeout, propagate=propagate, interval=interval,
+            no_ack=no_ack, follow_parents=follow_parents, callback=callback,
+            on_message=on_message, on_interval=on_interval,
+            disable_sync_subtasks=disable_sync_subtasks
+        )
 
-        if disable_sync_subtasks:
-            assert_will_not_block()
-        _on_interval = promise()
-        if follow_parents and propagate and self.parent:
-            _on_interval = promise(self._maybe_reraise_parent_error, weak=True)
-            self._maybe_reraise_parent_error()
-        if on_interval:
-            _on_interval.then(on_interval)
-
-        if self._cache:
-            if propagate:
-                self.maybe_throw(callback=callback)
-            return self.result
+        if not should_wait:
+            return cached_result
 
         self.backend.add_pending_result(self)
         return self.backend.wait_for_pending(
@@ -335,19 +358,39 @@ class AsyncResult(ResultBase):
 
         Wait until task is ready, and return its result.
 
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`get` method using asgiref's sync_to_async.
+        This method shares preparation logic with :meth:`get`, only wrapping
+        the actual I/O (backend.wait_for_pending) with sync_to_async.
 
         Arguments and return value are the same as :meth:`get`.
         """
         from asgiref.sync import sync_to_async
-        return await sync_to_async(self.get, thread_sensitive=False)(
+
+        # Prepare (no I/O)
+        should_wait, _on_interval, cached_result = self._prepare_get(
             timeout=timeout, propagate=propagate, interval=interval,
             no_ack=no_ack, follow_parents=follow_parents, callback=callback,
             on_message=on_message, on_interval=on_interval,
-            disable_sync_subtasks=disable_sync_subtasks,
-            EXCEPTION_STATES=EXCEPTION_STATES, PROPAGATE_STATES=PROPAGATE_STATES
+            disable_sync_subtasks=disable_sync_subtasks
         )
+
+        if not should_wait:
+            return cached_result
+
+        # I/O - wrap with sync_to_async
+        self.backend.add_pending_result(self)
+
+        def _wait_for_pending():
+            return self.backend.wait_for_pending(
+                self, timeout=timeout,
+                interval=interval,
+                on_interval=_on_interval,
+                no_ack=no_ack,
+                propagate=propagate,
+                callback=callback,
+                on_message=on_message,
+            )
+
+        return await sync_to_async(_wait_for_pending, thread_sensitive=False)()
 
     async def acollect(self, intermediate=False, **kwargs):
         """Async version of :meth:`collect`.
@@ -789,6 +832,19 @@ class ResultSet(ResultBase):
             on_interval=on_interval,
         )
 
+    def _prepare_join(self, timeout=None, disable_sync_subtasks=True, on_message=None):
+        """Prepare for join without performing I/O.
+
+        Raises:
+            ImproperlyConfigured: if on_message callback is provided.
+        """
+        if disable_sync_subtasks:
+            assert_will_not_block()
+
+        if on_message is not None:
+            raise ImproperlyConfigured(
+                'Backend does not support on_message callback')
+
     def join(self, timeout=None, propagate=True, interval=0.5,
              callback=None, no_ack=True, on_message=None,
              disable_sync_subtasks=True, on_interval=None):
@@ -836,14 +892,10 @@ class ResultSet(ResultBase):
                 :const:`None` and the operation takes longer than ``timeout``
                 seconds.
         """
-        if disable_sync_subtasks:
-            assert_will_not_block()
+        self._prepare_join(timeout=timeout, disable_sync_subtasks=disable_sync_subtasks,
+                          on_message=on_message)
         time_start = time.monotonic()
         remaining = None
-
-        if on_message is not None:
-            raise ImproperlyConfigured(
-                'Backend does not support on_message callback')
 
         results = []
         for result in self.results:
@@ -925,17 +977,25 @@ class ResultSet(ResultBase):
                    disable_sync_subtasks=True, on_interval=None):
         """Async version of :meth:`get`.
 
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`get` method using asgiref's sync_to_async.
+        This method dispatches to :meth:`ajoin_native` or :meth:`ajoin`
+        based on backend support, similar to :meth:`get`.
 
         Arguments and return value are the same as :meth:`get`.
         """
-        from asgiref.sync import sync_to_async
-        return await sync_to_async(self.get, thread_sensitive=False)(
-            timeout=timeout, propagate=propagate, interval=interval,
-            callback=callback, no_ack=no_ack, on_message=on_message,
-            disable_sync_subtasks=disable_sync_subtasks, on_interval=on_interval
-        )
+        if self.supports_native_join:
+            return await self.ajoin_native(
+                timeout=timeout, propagate=propagate,
+                interval=interval, callback=callback, no_ack=no_ack,
+                on_message=on_message, disable_sync_subtasks=disable_sync_subtasks,
+                on_interval=on_interval,
+            )
+        else:
+            return await self.ajoin(
+                timeout=timeout, propagate=propagate,
+                interval=interval, callback=callback, no_ack=no_ack,
+                on_message=on_message, disable_sync_subtasks=disable_sync_subtasks,
+                on_interval=on_interval,
+            )
 
     async def ajoin(self, timeout=None, propagate=True, interval=0.5,
                     callback=None, no_ack=True, on_message=None,
@@ -944,17 +1004,34 @@ class ResultSet(ResultBase):
 
         Gather the results of all tasks as a list in order.
 
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`join` method using asgiref's sync_to_async.
+        This method shares preparation logic with :meth:`join` and calls
+        :meth:`aget` on each individual result.
 
         Arguments and return value are the same as :meth:`join`.
         """
-        from asgiref.sync import sync_to_async
-        return await sync_to_async(self.join, thread_sensitive=False)(
-            timeout=timeout, propagate=propagate, interval=interval,
-            callback=callback, no_ack=no_ack, on_message=on_message,
-            disable_sync_subtasks=disable_sync_subtasks, on_interval=on_interval
-        )
+        import time
+        self._prepare_join(timeout=timeout, disable_sync_subtasks=disable_sync_subtasks,
+                          on_message=on_message)
+        time_start = time.monotonic()
+        remaining = None
+
+        results = []
+        for result in self.results:
+            remaining = None
+            if timeout:
+                remaining = timeout - (time.monotonic() - time_start)
+                if remaining <= 0.0:
+                    raise TimeoutError('join operation timed out')
+            value = await result.aget(
+                timeout=remaining, propagate=propagate,
+                interval=interval, no_ack=no_ack, on_interval=on_interval,
+                disable_sync_subtasks=disable_sync_subtasks,
+            )
+            if callback:
+                callback(result.id, value)
+            else:
+                results.append(value)
+        return results
 
     async def ajoin_native(self, timeout=None, propagate=True,
                            interval=0.5, callback=None, no_ack=True,

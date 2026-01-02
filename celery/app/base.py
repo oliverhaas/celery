@@ -817,24 +817,25 @@ class Celery:
             for pkg in fixup.autodiscover_tasks()
         ], related_name=related_name)
 
-    def send_task(self, name, args=None, kwargs=None, countdown=None,
-                  eta=None, task_id=None, producer=None, connection=None,
-                  router=None, result_cls=None, expires=None,
-                  publisher=None, link=None, link_error=None,
-                  add_to_parent=True, group_id=None, group_index=None,
-                  retries=0, chord=None,
-                  reply_to=None, time_limit=None, soft_time_limit=None,
-                  root_id=None, parent_id=None, route_name=None,
-                  shadow=None, chain=None, task_type=None, replaced_task_nesting=0, **options):
-        """Send task by name.
+    def _prepare_task_message(self, name, args=None, kwargs=None, countdown=None,
+                               eta=None, task_id=None, producer=None, connection=None,
+                               router=None, result_cls=None, expires=None,
+                               publisher=None, link=None, link_error=None,
+                               add_to_parent=True, group_id=None, group_index=None,
+                               retries=0, chord=None,
+                               reply_to=None, time_limit=None, soft_time_limit=None,
+                               root_id=None, parent_id=None, route_name=None,
+                               shadow=None, chain=None, task_type=None,
+                               replaced_task_nesting=0, **options):
+        """Prepare task message for sending.
 
-        Supports the same arguments as :meth:`@-Task.apply_async`.
+        This method handles all message preparation logic without performing
+        any I/O. It is shared by both sync and async send_task implementations.
 
-        Arguments:
-            name (str): Name of task to call (e.g., `"tasks.add"`).
-            result_cls (AsyncResult): Specify custom result class.
+        Returns:
+            tuple: (message, options, task_id, ignore_result, producer, result_cls)
+                   containing all prepared data needed for sending.
         """
-        parent = have_parent = None
         amqp = self.amqp
         task_id = task_id or uuid()
         producer = producer or publisher  # XXX compat
@@ -940,20 +941,70 @@ class Celery:
         if connection:
             producer = amqp.Producer(connection, auto_declare=False)
 
+        return message, options, task_id, ignore_result, producer, result_cls, add_to_parent
+
+    def _send_task_message(self, producer, name, message, task_id, ignore_result, **options):
+        """Send the prepared task message to the broker.
+
+        This method performs the actual I/O operations: acquiring a producer
+        connection and publishing the message.
+
+        Arguments:
+            producer: Optional producer to use (or None to acquire from pool).
+            name: Task name.
+            message: Prepared message from _prepare_task_message.
+            task_id: Task ID.
+            ignore_result: Whether to ignore the result.
+            **options: Additional options for send_task_message.
+        """
+        amqp = self.amqp
         with self.producer_or_acquire(producer) as P:
             with P.connection._reraise_as_library_errors():
                 if not ignore_result:
                     self.backend.on_task_call(P, task_id)
                 amqp.send_task_message(P, name, message, **options)
+
+    def send_task(self, name, args=None, kwargs=None, countdown=None,
+                  eta=None, task_id=None, producer=None, connection=None,
+                  router=None, result_cls=None, expires=None,
+                  publisher=None, link=None, link_error=None,
+                  add_to_parent=True, group_id=None, group_index=None,
+                  retries=0, chord=None,
+                  reply_to=None, time_limit=None, soft_time_limit=None,
+                  root_id=None, parent_id=None, route_name=None,
+                  shadow=None, chain=None, task_type=None, replaced_task_nesting=0, **options):
+        """Send task by name.
+
+        Supports the same arguments as :meth:`@-Task.apply_async`.
+
+        Arguments:
+            name (str): Name of task to call (e.g., `"tasks.add"`).
+            result_cls (AsyncResult): Specify custom result class.
+        """
+        # Prepare message (no I/O)
+        message, options, task_id, ignore_result, producer, result_cls, add_to_parent = \
+            self._prepare_task_message(
+                name, args=args, kwargs=kwargs, countdown=countdown,
+                eta=eta, task_id=task_id, producer=producer, connection=connection,
+                router=router, result_cls=result_cls, expires=expires,
+                publisher=publisher, link=link, link_error=link_error,
+                add_to_parent=add_to_parent, group_id=group_id, group_index=group_index,
+                retries=retries, chord=chord,
+                reply_to=reply_to, time_limit=time_limit, soft_time_limit=soft_time_limit,
+                root_id=root_id, parent_id=parent_id, route_name=route_name,
+                shadow=shadow, chain=chain, task_type=task_type,
+                replaced_task_nesting=replaced_task_nesting, **options
+            )
+
+        # Send message (I/O)
+        self._send_task_message(producer, name, message, task_id, ignore_result, **options)
+
+        # Build result (no I/O)
         result = (result_cls or self.AsyncResult)(task_id)
-        # We avoid using the constructor since a custom result class
-        # can be used, in which case the constructor may still use
-        # the old signature.
         result.ignored = ignore_result
 
         if add_to_parent:
-            if not have_parent:
-                parent, have_parent = self.current_worker_task, True
+            parent = self.current_worker_task
             if parent:
                 parent.add_trail(result)
         return result
@@ -971,24 +1022,45 @@ class Celery:
 
         Send task by name.
 
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`send_task` method using asgiref's sync_to_async.
+        This method shares message preparation logic with :meth:`send_task`,
+        only wrapping the actual I/O operations (broker communication) with
+        sync_to_async. This is a step toward native asyncio support - the
+        sync_to_async wrapper can be replaced with native async broker
+        operations once kombu supports asyncio.
 
         Arguments and return value are the same as :meth:`send_task`.
         """
         from asgiref.sync import sync_to_async
-        return await sync_to_async(self.send_task, thread_sensitive=False)(
-            name, args=args, kwargs=kwargs, countdown=countdown,
-            eta=eta, task_id=task_id, producer=producer, connection=connection,
-            router=router, result_cls=result_cls, expires=expires,
-            publisher=publisher, link=link, link_error=link_error,
-            add_to_parent=add_to_parent, group_id=group_id, group_index=group_index,
-            retries=retries, chord=chord,
-            reply_to=reply_to, time_limit=time_limit, soft_time_limit=soft_time_limit,
-            root_id=root_id, parent_id=parent_id, route_name=route_name,
-            shadow=shadow, chain=chain, task_type=task_type,
-            replaced_task_nesting=replaced_task_nesting, **options
+
+        # Prepare message (no I/O) - runs synchronously
+        message, options, task_id, ignore_result, producer, result_cls, add_to_parent = \
+            self._prepare_task_message(
+                name, args=args, kwargs=kwargs, countdown=countdown,
+                eta=eta, task_id=task_id, producer=producer, connection=connection,
+                router=router, result_cls=result_cls, expires=expires,
+                publisher=publisher, link=link, link_error=link_error,
+                add_to_parent=add_to_parent, group_id=group_id, group_index=group_index,
+                retries=retries, chord=chord,
+                reply_to=reply_to, time_limit=time_limit, soft_time_limit=soft_time_limit,
+                root_id=root_id, parent_id=parent_id, route_name=route_name,
+                shadow=shadow, chain=chain, task_type=task_type,
+                replaced_task_nesting=replaced_task_nesting, **options
+            )
+
+        # Send message (I/O) - wrapped with sync_to_async
+        await sync_to_async(self._send_task_message, thread_sensitive=False)(
+            producer, name, message, task_id, ignore_result, **options
         )
+
+        # Build result (no I/O) - runs synchronously
+        result = (result_cls or self.AsyncResult)(task_id)
+        result.ignored = ignore_result
+
+        if add_to_parent:
+            parent = self.current_worker_task
+            if parent:
+                parent.add_trail(result)
+        return result
 
     def connection_for_read(self, url=None, **kwargs):
         """Establish connection used for consuming.
