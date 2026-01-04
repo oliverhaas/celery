@@ -9,6 +9,8 @@ import itertools
 import operator
 import warnings
 from abc import ABCMeta, abstractmethod
+
+from asgiref.sync import sync_to_async
 from collections import deque
 from collections.abc import MutableSequence
 from copy import deepcopy
@@ -359,34 +361,35 @@ class Signature(dict):
         """
         return await self.aapply_async(partial_args, partial_kwargs)
 
-    def apply(self, args=None, kwargs=None, **options):
-        """Call task locally.
+    def _prepare_apply(self, args=None, kwargs=None, **options):
+        """Prepare for apply without performing task execution.
 
-        Same as :meth:`apply_async` but executed the task inline instead
-        of sending a task message.
+        Returns:
+            tuple: (args, kwargs, options) ready for task.apply().
         """
         args = args if args else ()
         kwargs = kwargs if kwargs else {}
         # Extra options set to None are dismissed
         options = {k: v for k, v in options.items() if v is not None}
         # For callbacks: extra args are prepended to the stored args.
-        args, kwargs, options = self._merge(args, kwargs, options)
+        return self._merge(args, kwargs, options)
+
+    def apply(self, args=None, kwargs=None, **options):
+        """Call task locally.
+
+        Same as :meth:`apply_async` but executed the task inline instead
+        of sending a task message.
+        """
+        args, kwargs, options = self._prepare_apply(args, kwargs, **options)
         return self.type.apply(args, kwargs, **options)
 
     async def aapply(self, args=None, kwargs=None, **options):
         """Async version of :meth:`apply`.
 
-        Call task locally.
-
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`apply` method using asgiref's sync_to_async.
-
         Arguments and return value are the same as :meth:`apply`.
         """
-        from asgiref.sync import sync_to_async
-        return await sync_to_async(self.apply, thread_sensitive=False)(
-            args=args, kwargs=kwargs, **options
-        )
+        args, kwargs, options = self._prepare_apply(args, kwargs, **options)
+        return await self.type.aapply(args, kwargs, **options)
 
     def _prepare_apply_async(self, args=None, kwargs=None, route_name=None, **options):
         """Prepare arguments for apply_async without performing I/O.
@@ -1125,8 +1128,6 @@ class _chain(Signature):
 
         Arguments and return value are the same as :meth:`apply_async`.
         """
-        from asgiref.sync import sync_to_async
-
         args, kwargs, app, merged_options = self._prepare_apply_async(
             args=args, kwargs=kwargs, **options
         )
@@ -1435,15 +1436,16 @@ class _chain(Signature):
     async def aapply(self, args=None, kwargs=None, **options):
         """Async version of :meth:`apply`.
 
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`apply` method using asgiref's sync_to_async.
-
         Arguments and return value are the same as :meth:`apply`.
         """
-        from asgiref.sync import sync_to_async
-        return await sync_to_async(self.apply, thread_sensitive=False)(
-            args=args, kwargs=kwargs, **options
-        )
+        args = args if args else ()
+        kwargs = kwargs if kwargs else {}
+        last, (fargs, fkwargs) = None, (args, kwargs)
+        for task in self.tasks:
+            res = await task.clone(fargs, fkwargs).aapply(
+                last and (await last.aget(),), **dict(self.options, **options))
+            res.parent, last, (fargs, fkwargs) = last, res, (None, None)
+        return last
 
     @property
     def app(self):
@@ -1846,14 +1848,28 @@ class group(Signature):
             parent_task.add_trail(result)
         return result
 
-    def apply(self, args=None, kwargs=None, **options):
+    def _prepare_apply(self, args=None, kwargs=None, **options):
+        """Prepare for apply without performing task execution.
+
+        Returns:
+            tuple: (args, kwargs, app, options, group_id, tasks) or
+                   (args, kwargs, app, options, group_id, None) if empty group.
+        """
         args = args if args else ()
         kwargs = kwargs if kwargs else {}
         app = self.app
         if not self.tasks:
-            return self.freeze()  # empty group returns GroupResult
+            return args, kwargs, app, options, None, None
         options, group_id, root_id = self._freeze_gid(options)
         tasks = self._prepared(self.tasks, [], group_id, root_id, app)
+        return args, kwargs, app, options, group_id, tasks
+
+    def apply(self, args=None, kwargs=None, **options):
+        args, kwargs, app, options, group_id, tasks = self._prepare_apply(
+            args=args, kwargs=kwargs, **options
+        )
+        if tasks is None:
+            return self.freeze()  # empty group returns GroupResult
         return app.GroupResult(group_id, [
             sig.apply(args=args, kwargs=kwargs, **options) for sig, _, _ in tasks
         ])
@@ -1867,8 +1883,6 @@ class group(Signature):
 
         Arguments and return value are the same as :meth:`apply_async`.
         """
-        from asgiref.sync import sync_to_async
-
         args, app, prep_options, group_id, tasks, add_to_parent = self._prepare_apply_async(
             args=args, kwargs=kwargs, add_to_parent=add_to_parent,
             producer=producer, link=link, link_error=link_error, **options
@@ -1876,15 +1890,11 @@ class group(Signature):
 
         if tasks is None:
             if app.conf.task_always_eager:
-                return await sync_to_async(self.apply, thread_sensitive=False)(
-                    args, kwargs, **options
-                ) if options else await sync_to_async(self.apply, thread_sensitive=False)(args, kwargs)
+                return await self.aapply(args, kwargs, **options) if options else await self.aapply(args, kwargs)
             return self.freeze()
 
         if app.conf.task_always_eager:
-            return await sync_to_async(self.apply, thread_sensitive=False)(
-                args, kwargs, **options
-            )
+            return await self.aapply(args, kwargs, **options)
 
         p = barrier()
         results = await self._aapply_tasks(tasks, producer, app, p,
@@ -1903,15 +1913,17 @@ class group(Signature):
     async def aapply(self, args=None, kwargs=None, **options):
         """Async version of :meth:`apply`.
 
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`apply` method using asgiref's sync_to_async.
-
         Arguments and return value are the same as :meth:`apply`.
         """
-        from asgiref.sync import sync_to_async
-        return await sync_to_async(self.apply, thread_sensitive=False)(
+        args, kwargs, app, options, group_id, tasks = self._prepare_apply(
             args=args, kwargs=kwargs, **options
         )
+        if tasks is None:
+            return self.freeze()  # empty group returns GroupResult
+        results = []
+        for sig, _, _ in tasks:
+            results.append(await sig.aapply(args=args, kwargs=kwargs, **options))
+        return app.GroupResult(group_id, results)
 
     def set_immutable(self, immutable):
         for task in self.tasks:
@@ -2083,8 +2095,6 @@ class group(Signature):
 
         Run all the tasks in the group asynchronously.
         """
-        from asgiref.sync import sync_to_async
-
         # pylint: disable=redefined-outer-name
         #   XXX chord is also a class in outer scope.
         app = app or self.app
@@ -2491,13 +2501,24 @@ class _chord(Signature):
         # chord([A, B, ...], C)
         return self.run(tasks, body, args, task_id=task_id, kwargs=kwargs, **merged_options)
 
-    def apply(self, args=None, kwargs=None,
-              propagate=True, body=None, **options):
+    def _prepare_apply(self, args=None, kwargs=None, body=None, **options):
+        """Prepare for apply without performing task execution.
+
+        Returns:
+            tuple: (args, kwargs, body, tasks)
+        """
         args = args if args else ()
         kwargs = kwargs if kwargs else {}
         body = self.body if body is None else body
         tasks = (self.tasks.clone() if isinstance(self.tasks, group)
                  else group(self.tasks, app=self.app))
+        return args, kwargs, body, tasks
+
+    def apply(self, args=None, kwargs=None,
+              propagate=True, body=None, **options):
+        args, kwargs, body, tasks = self._prepare_apply(
+            args=args, kwargs=kwargs, body=body, **options
+        )
         return body.apply(
             args=(tasks.apply(args, kwargs).get(propagate=propagate),),
         )
@@ -2512,17 +2533,13 @@ class _chord(Signature):
 
         Arguments and return value are the same as :meth:`apply_async`.
         """
-        from asgiref.sync import sync_to_async
-
         tasks, body, args, task_id, kwargs, merged_options, app = self._prepare_apply_async(
             args=args, kwargs=kwargs, task_id=task_id, **options
         )
 
         if app.conf.task_always_eager:
             with allow_join_result():
-                return await sync_to_async(self.apply, thread_sensitive=False)(
-                    args, kwargs, body=body, task_id=task_id, **options
-                )
+                return await self.aapply(args, kwargs, body=body, task_id=task_id, **options)
 
         # chord([A, B, ...], C)
         return await self.arun(tasks, body, args, task_id=task_id, kwargs=kwargs, **merged_options)
@@ -2531,15 +2548,14 @@ class _chord(Signature):
                      propagate=True, body=None, **options):
         """Async version of :meth:`apply`.
 
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`apply` method using asgiref's sync_to_async.
-
         Arguments and return value are the same as :meth:`apply`.
         """
-        from asgiref.sync import sync_to_async
-        return await sync_to_async(self.apply, thread_sensitive=False)(
-            args=args, kwargs=kwargs, propagate=propagate, body=body, **options
+        args, kwargs, body, tasks = self._prepare_apply(
+            args=args, kwargs=kwargs, body=body, **options
         )
+        task_result = await tasks.aapply(args, kwargs)
+        result_value = await task_result.aget(propagate=propagate)
+        return await body.aapply(args=(result_value,))
 
     @classmethod
     def _descend(cls, sig_obj):
@@ -2646,8 +2662,6 @@ class _chord(Signature):
 
         Execute the chord asynchronously.
         """
-        from asgiref.sync import sync_to_async
-
         app = app or self._get_app(body)
         group_id = header.options.get('task_id') or uuid()
         root_id = body.options.get('root_id')

@@ -1,6 +1,7 @@
 """Task implementation: request context and the task base class."""
 import sys
 
+from asgiref.sync import sync_to_async
 from billiard.einfo import ExceptionInfo, ExceptionWithTraceback
 from kombu import serialization
 from kombu.exceptions import OperationalError
@@ -670,8 +671,6 @@ class Task:
 
         Arguments and return value are the same as :meth:`apply_async`.
         """
-        from asgiref.sync import sync_to_async
-
         # Prepare (no I/O) - runs synchronously
         args, kwargs, shadow, options, app = self._prepare_apply_async(
             args=args, kwargs=kwargs, shadow=shadow, **options
@@ -817,6 +816,36 @@ class Task:
                 has been explicitly set to :const:`False`, and is considered
                 normal operation.
         """
+        S, ret, is_eager = self._prepare_retry(
+            args=args, kwargs=kwargs, exc=exc, throw=throw,
+            eta=eta, countdown=countdown, max_retries=max_retries, **options
+        )
+
+        if is_eager:
+            # if task was executed eagerly using apply(),
+            # then the retry must also be executed eagerly in apply method
+            if throw:
+                raise ret
+            return ret
+
+        try:
+            S.apply_async()
+        except Exception as exc:
+            raise Reject(exc, requeue=False)
+        if throw:
+            raise ret
+        return ret
+
+    def _prepare_retry(self, args=None, kwargs=None, exc=None, throw=True,
+                       eta=None, countdown=None, max_retries=None, **options):
+        """Prepare for retry without performing I/O.
+
+        Returns:
+            tuple: (signature, retry_exc, is_eager) where:
+                - signature: The signature to apply for retry
+                - retry_exc: The Retry exception to raise/return
+                - is_eager: Whether this is an eager execution
+        """
         request = self.request
         retries = request.retries + 1
         if max_retries is not None:
@@ -852,53 +881,40 @@ class Task:
             )
 
         ret = Retry(exc=exc, when=eta or countdown, is_eager=is_eager, sig=S)
+        return S, ret, is_eager
+
+    async def aretry(self, args=None, kwargs=None, exc=None, throw=True,
+                     eta=None, countdown=None, max_retries=None, **options):
+        """Async version of :meth:`retry`.
+
+        Arguments and return value are the same as :meth:`retry`.
+        """
+        S, ret, is_eager = self._prepare_retry(
+            args=args, kwargs=kwargs, exc=exc, throw=throw,
+            eta=eta, countdown=countdown, max_retries=max_retries, **options
+        )
 
         if is_eager:
-            # if task was executed eagerly using apply(),
-            # then the retry must also be executed eagerly in apply method
             if throw:
                 raise ret
             return ret
 
         try:
-            S.apply_async()
+            await S.aapply_async()
         except Exception as exc:
             raise Reject(exc, requeue=False)
         if throw:
             raise ret
         return ret
 
-    async def aretry(self, args=None, kwargs=None, exc=None, throw=True,
-                     eta=None, countdown=None, max_retries=None, **options):
-        """Async version of :meth:`retry`.
-
-        Retry the task, adding it to the back of the queue.
-
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`retry` method using asgiref's sync_to_async.
-
-        Arguments and return value are the same as :meth:`retry`.
-        """
-        from asgiref.sync import sync_to_async
-        return await sync_to_async(self.retry, thread_sensitive=False)(
-            args=args, kwargs=kwargs, exc=exc, throw=throw,
-            eta=eta, countdown=countdown, max_retries=max_retries, **options
-        )
-
-    def apply(self, args=None, kwargs=None,
-              link=None, link_error=None,
-              task_id=None, retries=None, throw=None,
-              logfile=None, loglevel=None, headers=None, **options):
-        """Execute this task locally, by blocking until the task returns.
-
-        Arguments:
-            args (Tuple): positional arguments passed on to the task.
-            kwargs (Dict): keyword arguments passed on to the task.
-            throw (bool): Re-raise task exceptions.
-                Defaults to the :setting:`task_eager_propagates` setting.
+    def _prepare_apply(self, args=None, kwargs=None,
+                        link=None, link_error=None,
+                        task_id=None, retries=None, throw=None,
+                        logfile=None, loglevel=None, headers=None, **options):
+        """Prepare for apply without performing task execution.
 
         Returns:
-            celery.result.EagerResult: pre-evaluated result.
+            tuple: (task, args, kwargs, task_id, retries, throw, request, tracer)
         """
         # trace imports Task, so need to import inline.
         from celery.app.trace import build_tracer
@@ -949,20 +965,56 @@ class Task:
                 header: maybe_list(options.get(header, [])) for header in request['stamped_headers']
             }
 
-        tb = None
         tracer = build_tracer(
             task.name, task, eager=True,
             propagate=throw, app=self._get_app(),
         )
-        ret = tracer(task_id, args, kwargs, request)
+        return task, args, kwargs, task_id, retries, throw, request, tracer
+
+    def _process_apply_result(self, ret, retries, task_id):
+        """Process result from tracer execution.
+
+        Returns:
+            tuple: (retval, tb, state, retry_sig) where retry_sig is the
+                   signature to retry with, or None if no retry needed.
+        """
+        tb = None
         retval = ret.retval
         if isinstance(retval, ExceptionInfo):
             retval, tb = retval.exception, retval.traceback
             if isinstance(retval, ExceptionWithTraceback):
                 retval = retval.exc
         if isinstance(retval, Retry) and retval.sig is not None:
-            return retval.sig.apply(retries=retries + 1)
+            return retval, tb, None, retval.sig
         state = states.SUCCESS if ret.info is None else ret.info.state
+        return retval, tb, state, None
+
+    def apply(self, args=None, kwargs=None,
+              link=None, link_error=None,
+              task_id=None, retries=None, throw=None,
+              logfile=None, loglevel=None, headers=None, **options):
+        """Execute this task locally, by blocking until the task returns.
+
+        Arguments:
+            args (Tuple): positional arguments passed on to the task.
+            kwargs (Dict): keyword arguments passed on to the task.
+            throw (bool): Re-raise task exceptions.
+                Defaults to the :setting:`task_eager_propagates` setting.
+
+        Returns:
+            celery.result.EagerResult: pre-evaluated result.
+        """
+        task, args, kwargs, task_id, retries, throw, request, tracer = self._prepare_apply(
+            args=args, kwargs=kwargs, link=link, link_error=link_error,
+            task_id=task_id, retries=retries, throw=throw,
+            logfile=logfile, loglevel=loglevel, headers=headers, **options
+        )
+
+        ret = tracer(task_id, args, kwargs, request)
+        retval, tb, state, retry_sig = self._process_apply_result(ret, retries, task_id)
+
+        if retry_sig is not None:
+            return retry_sig.apply(retries=retries + 1)
         return EagerResult(task_id, retval, state, traceback=tb, name=self.name)
 
     async def aapply(self, args=None, kwargs=None,
@@ -971,19 +1023,21 @@ class Task:
                      logfile=None, loglevel=None, headers=None, **options):
         """Async version of :meth:`apply`.
 
-        Execute this task locally, by blocking until the task returns.
-
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`apply` method using asgiref's sync_to_async.
-
         Arguments and return value are the same as :meth:`apply`.
         """
-        from asgiref.sync import sync_to_async
-        return await sync_to_async(self.apply, thread_sensitive=False)(
+        task, args, kwargs, task_id, retries, throw, request, tracer = self._prepare_apply(
             args=args, kwargs=kwargs, link=link, link_error=link_error,
             task_id=task_id, retries=retries, throw=throw,
             logfile=logfile, loglevel=loglevel, headers=headers, **options
         )
+
+        # Task execution - wrap with sync_to_async
+        ret = await sync_to_async(tracer, thread_sensitive=False)(task_id, args, kwargs, request)
+        retval, tb, state, retry_sig = self._process_apply_result(ret, retries, task_id)
+
+        if retry_sig is not None:
+            return await retry_sig.aapply(retries=retries + 1)
+        return EagerResult(task_id, retval, state, traceback=tb, name=self.name)
 
     def AsyncResult(self, task_id, **kwargs):
         """Get AsyncResult instance for the specified task.

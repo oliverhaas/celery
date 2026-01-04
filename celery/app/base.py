@@ -8,6 +8,8 @@ import threading
 import typing
 import warnings
 from collections import UserDict, defaultdict, deque
+
+from asgiref.sync import sync_to_async
 from datetime import datetime
 from datetime import timezone as datetime_timezone
 from operator import attrgetter
@@ -1030,8 +1032,6 @@ class Celery:
 
         Arguments and return value are the same as :meth:`send_task`.
         """
-        from asgiref.sync import sync_to_async
-
         # Prepare message (no I/O) - runs synchronously
         message, options, task_id, ignore_result, producer, result_cls, add_to_parent = \
             self._prepare_task_message(

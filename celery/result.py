@@ -6,6 +6,8 @@ from collections import deque
 from contextlib import contextmanager
 from weakref import proxy
 
+from asgiref.sync import sync_to_async
+
 from dateutil.parser import isoparse
 from kombu.utils.objects import cached_property
 from vine import Thenable, barrier, promise
@@ -363,8 +365,6 @@ class AsyncResult(ResultBase):
 
         Arguments and return value are the same as :meth:`get`.
         """
-        from asgiref.sync import sync_to_async
-
         # Prepare (no I/O)
         should_wait, _on_interval, cached_result = self._prepare_get(
             timeout=timeout, propagate=propagate, interval=interval,
@@ -395,56 +395,44 @@ class AsyncResult(ResultBase):
     async def acollect(self, intermediate=False, **kwargs):
         """Async version of :meth:`collect`.
 
-        Collect results as they return.
-
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`collect` method.
-
         Arguments and return value are the same as :meth:`collect`.
         """
-        from asgiref.sync import sync_to_async
-        # collect is a generator, so we need to consume it in a sync context
-        def _collect():
-            return list(self.collect(intermediate=intermediate, **kwargs))
-        return await sync_to_async(_collect, thread_sensitive=False)()
+        results = []
+        for _, R in self.iterdeps(intermediate=intermediate):
+            results.append((R, await R.aget(**kwargs)))
+        return results
 
     async def aget_leaf(self):
         """Async version of :meth:`get_leaf`.
 
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`get_leaf` method using asgiref's sync_to_async.
-
         Arguments and return value are the same as :meth:`get_leaf`.
         """
-        from asgiref.sync import sync_to_async
-        return await sync_to_async(self.get_leaf, thread_sensitive=False)()
+        value = None
+        for _, R in self.iterdeps():
+            value = await R.aget()
+        return value
 
     async def aforget(self):
         """Async version of :meth:`forget`.
 
         Forget the result of this task and its parents.
-
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`forget` method using asgiref's sync_to_async.
         """
-        from asgiref.sync import sync_to_async
-        return await sync_to_async(self.forget, thread_sensitive=False)()
+        self._cache = None
+        if self.parent:
+            await self.parent.aforget()
+
+        await sync_to_async(self.backend.remove_pending_result, thread_sensitive=False)(self)
+        await sync_to_async(self.backend.forget, thread_sensitive=False)(self.id)
 
     async def arevoke(self, connection=None, terminate=False, signal=None,
                       wait=False, timeout=None):
         """Async version of :meth:`revoke`.
 
-        Send revoke signal to all workers.
-
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`revoke` method using asgiref's sync_to_async.
-
         Arguments are the same as :meth:`revoke`.
         """
-        from asgiref.sync import sync_to_async
-        return await sync_to_async(self.revoke, thread_sensitive=False)(
-            connection=connection, terminate=terminate, signal=signal,
-            wait=wait, timeout=timeout
+        await sync_to_async(self.app.control.revoke, thread_sensitive=False)(
+            self.id, connection=connection, terminate=terminate, signal=signal,
+            reply=wait, timeout=timeout
         )
 
     def iterdeps(self, intermediate=False):
@@ -1009,7 +997,6 @@ class ResultSet(ResultBase):
 
         Arguments and return value are the same as :meth:`join`.
         """
-        import time
         self._prepare_join(timeout=timeout, disable_sync_subtasks=disable_sync_subtasks,
                           on_message=on_message)
         time_start = time.monotonic()
@@ -1041,12 +1028,9 @@ class ResultSet(ResultBase):
 
         Backend optimized version of :meth:`ajoin`.
 
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`join_native` method using asgiref's sync_to_async.
-
         Arguments and return value are the same as :meth:`join_native`.
         """
-        from asgiref.sync import sync_to_async
+        # Backend iter_native is the I/O boundary - wrap entire iteration
         return await sync_to_async(self.join_native, thread_sensitive=False)(
             timeout=timeout, propagate=propagate, interval=interval,
             callback=callback, no_ack=no_ack, on_message=on_message,
@@ -1059,13 +1043,9 @@ class ResultSet(ResultBase):
 
         Backend optimized version of iterate.
 
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`iter_native` method.
-
         Arguments and return value are the same as :meth:`iter_native`.
         """
-        from asgiref.sync import sync_to_async
-        # iter_native is a generator, so we need to consume it in a sync context
+        # Backend iter_native is the I/O boundary - wrap entire iteration
         def _iter_native():
             return list(self.iter_native(
                 timeout=timeout, interval=interval, no_ack=no_ack,
@@ -1077,12 +1057,9 @@ class ResultSet(ResultBase):
         """Async version of :meth:`forget`.
 
         Forget about (and possible remove the result of) all the tasks.
-
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`forget` method using asgiref's sync_to_async.
         """
-        from asgiref.sync import sync_to_async
-        return await sync_to_async(self.forget, thread_sensitive=False)()
+        for result in self.results:
+            await result.aforget()
 
     async def arevoke(self, connection=None, terminate=False, signal=None,
                       wait=False, timeout=None):
@@ -1090,15 +1067,12 @@ class ResultSet(ResultBase):
 
         Send revoke signal to all workers for all tasks in the set.
 
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`revoke` method using asgiref's sync_to_async.
-
         Arguments are the same as :meth:`revoke`.
         """
-        from asgiref.sync import sync_to_async
-        return await sync_to_async(self.revoke, thread_sensitive=False)(
-            connection=connection, terminate=terminate, signal=signal,
-            wait=wait, timeout=timeout
+        await sync_to_async(self.app.control.revoke, thread_sensitive=False)(
+            [r.id for r in self.results],
+            connection=connection, timeout=timeout,
+            terminate=terminate, signal=signal, reply=wait
         )
 
     def _iter_meta(self, **kwargs):
@@ -1192,44 +1166,29 @@ class GroupResult(ResultSet):
     async def asave(self, backend=None):
         """Async version of :meth:`save`.
 
-        Save group-result for later retrieval using :meth:`restore`.
-
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`save` method using asgiref's sync_to_async.
-
         Arguments are the same as :meth:`save`.
         """
-        from asgiref.sync import sync_to_async
-        return await sync_to_async(self.save, thread_sensitive=False)(backend=backend)
+        _backend = backend or self.app.backend
+        return await sync_to_async(_backend.save_group, thread_sensitive=False)(self.id, self)
 
     async def adelete(self, backend=None):
         """Async version of :meth:`delete`.
 
-        Remove this result if it was previously saved.
-
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`delete` method using asgiref's sync_to_async.
-
         Arguments are the same as :meth:`delete`.
         """
-        from asgiref.sync import sync_to_async
-        return await sync_to_async(self.delete, thread_sensitive=False)(backend=backend)
+        _backend = backend or self.app.backend
+        await sync_to_async(_backend.delete_group, thread_sensitive=False)(self.id)
 
     @classmethod
     async def arestore(cls, id, backend=None, app=None):
         """Async version of :meth:`restore`.
 
-        Restore previously saved group result.
-
-        This is the asyncio-compatible version that wraps the synchronous
-        :meth:`restore` method using asgiref's sync_to_async.
-
         Arguments are the same as :meth:`restore`.
         """
-        from asgiref.sync import sync_to_async
-        return await sync_to_async(cls.restore, thread_sensitive=False)(
-            id, backend=backend, app=app
-        )
+        # Must use the same logic as restore() to get the backend
+        app = app if app is not None else current_app
+        _backend = backend or app.backend
+        return await sync_to_async(_backend.restore_group, thread_sensitive=False)(id)
 
     def __reduce__(self):
         return self.__class__, self.__reduce_args__()
