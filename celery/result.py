@@ -360,8 +360,8 @@ class AsyncResult(ResultBase):
 
         Wait until task is ready, and return its result.
 
-        This method shares preparation logic with :meth:`get`, only wrapping
-        the actual I/O (backend.wait_for_pending) with sync_to_async.
+        This method shares preparation logic with :meth:`get` and delegates
+        to the backend's async method for waiting on results.
 
         Arguments and return value are the same as :meth:`get`.
         """
@@ -376,21 +376,17 @@ class AsyncResult(ResultBase):
         if not should_wait:
             return cached_result
 
-        # I/O - wrap with sync_to_async
         self.backend.add_pending_result(self)
 
-        def _wait_for_pending():
-            return self.backend.wait_for_pending(
-                self, timeout=timeout,
-                interval=interval,
-                on_interval=_on_interval,
-                no_ack=no_ack,
-                propagate=propagate,
-                callback=callback,
-                on_message=on_message,
-            )
-
-        return await sync_to_async(_wait_for_pending, thread_sensitive=False)()
+        return await self.backend.await_for_pending(
+            self, timeout=timeout,
+            interval=interval,
+            on_interval=_on_interval,
+            no_ack=no_ack,
+            propagate=propagate,
+            callback=callback,
+            on_message=on_message,
+        )
 
     async def acollect(self, intermediate=False, **kwargs):
         """Async version of :meth:`collect`.
@@ -421,8 +417,8 @@ class AsyncResult(ResultBase):
         if self.parent:
             await self.parent.aforget()
 
-        await sync_to_async(self.backend.remove_pending_result, thread_sensitive=False)(self)
-        await sync_to_async(self.backend.forget, thread_sensitive=False)(self.id)
+        await self.backend.aremove_pending_result(self)
+        await self.backend.aforget(self.id)
 
     async def arevoke(self, connection=None, terminate=False, signal=None,
                       wait=False, timeout=None):
@@ -1030,12 +1026,34 @@ class ResultSet(ResultBase):
 
         Arguments and return value are the same as :meth:`join_native`.
         """
-        # Backend iter_native is the I/O boundary - wrap entire iteration
-        return await sync_to_async(self.join_native, thread_sensitive=False)(
-            timeout=timeout, propagate=propagate, interval=interval,
-            callback=callback, no_ack=no_ack, on_message=on_message,
-            on_interval=on_interval, disable_sync_subtasks=disable_sync_subtasks
+        if disable_sync_subtasks:
+            assert_will_not_block()
+        order_index = None if callback else {
+            result.id: i for i, result in enumerate(self.results)
+        }
+        acc = None if callback else [None for _ in range(len(self))]
+
+        # Use backend's async iter_native
+        results = await self.backend.aiter_native(
+            self, timeout=timeout, interval=interval, no_ack=no_ack,
+            on_message=on_message, on_interval=on_interval,
         )
+
+        for task_id, meta in results:
+            if isinstance(meta, list):
+                # Nested ResultSet - need to await each child
+                value = []
+                for children_result in meta:
+                    value.append(await children_result.aget())
+            else:
+                value = meta['result']
+                if propagate and meta['status'] in states.PROPAGATE_STATES:
+                    raise value
+            if callback:
+                callback(task_id, value)
+            else:
+                acc[order_index[task_id]] = value
+        return acc
 
     async def aiter_native(self, timeout=None, interval=0.5, no_ack=True,
                            on_message=None, on_interval=None):
@@ -1045,13 +1063,10 @@ class ResultSet(ResultBase):
 
         Arguments and return value are the same as :meth:`iter_native`.
         """
-        # Backend iter_native is the I/O boundary - wrap entire iteration
-        def _iter_native():
-            return list(self.iter_native(
-                timeout=timeout, interval=interval, no_ack=no_ack,
-                on_message=on_message, on_interval=on_interval
-            ))
-        return await sync_to_async(_iter_native, thread_sensitive=False)()
+        return await self.backend.aiter_native(
+            self, timeout=timeout, interval=interval, no_ack=no_ack,
+            on_message=on_message, on_interval=on_interval,
+        )
 
     async def aforget(self):
         """Async version of :meth:`forget`.
@@ -1169,7 +1184,7 @@ class GroupResult(ResultSet):
         Arguments are the same as :meth:`save`.
         """
         _backend = backend or self.app.backend
-        return await sync_to_async(_backend.save_group, thread_sensitive=False)(self.id, self)
+        return await _backend.asave_group(self.id, self)
 
     async def adelete(self, backend=None):
         """Async version of :meth:`delete`.
@@ -1177,7 +1192,7 @@ class GroupResult(ResultSet):
         Arguments are the same as :meth:`delete`.
         """
         _backend = backend or self.app.backend
-        await sync_to_async(_backend.delete_group, thread_sensitive=False)(self.id)
+        await _backend.adelete_group(self.id)
 
     @classmethod
     async def arestore(cls, id, backend=None, app=None):
@@ -1188,7 +1203,7 @@ class GroupResult(ResultSet):
         # Must use the same logic as restore() to get the backend
         app = app if app is not None else current_app
         _backend = backend or app.backend
-        return await sync_to_async(_backend.restore_group, thread_sensitive=False)(id)
+        return await _backend.arestore_group(id)
 
     def __reduce__(self):
         return self.__class__, self.__reduce_args__()

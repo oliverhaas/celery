@@ -8,6 +8,8 @@
 import sys
 import time
 import warnings
+
+from asgiref.sync import sync_to_async
 from collections import namedtuple
 from datetime import timedelta
 from functools import partial
@@ -762,6 +764,51 @@ class Backend:
     def delete_group(self, group_id):
         self._cache.pop(group_id, None)
         return self._delete_group(group_id)
+
+    # --- Async methods ---
+    # These default implementations use sync_to_async to wrap sync methods.
+    # Backends with native async support (e.g., Redis) should override these.
+
+    async def aforget(self, task_id):
+        """Async version of forget."""
+        return await sync_to_async(self.forget, thread_sensitive=False)(task_id)
+
+    async def asave_group(self, group_id, result):
+        """Async version of save_group."""
+        return await sync_to_async(self.save_group, thread_sensitive=False)(group_id, result)
+
+    async def adelete_group(self, group_id):
+        """Async version of delete_group."""
+        return await sync_to_async(self.delete_group, thread_sensitive=False)(group_id)
+
+    async def arestore_group(self, group_id, cache=True):
+        """Async version of restore_group."""
+        return await sync_to_async(self.restore_group, thread_sensitive=False)(group_id, cache=cache)
+
+    async def await_for_pending(self, result, timeout=None, interval=0.5,
+                                no_ack=True, on_message=None, on_interval=None,
+                                callback=None, propagate=True):
+        """Async version of wait_for_pending."""
+        return await sync_to_async(self.wait_for_pending, thread_sensitive=False)(
+            result, timeout=timeout, interval=interval, no_ack=no_ack,
+            on_message=on_message, on_interval=on_interval,
+            callback=callback, propagate=propagate
+        )
+
+    async def aremove_pending_result(self, result):
+        """Async version of remove_pending_result."""
+        return await sync_to_async(self.remove_pending_result, thread_sensitive=False)(result)
+
+    async def aiter_native(self, result, timeout=None, interval=0.5, no_ack=True,
+                           on_message=None, on_interval=None):
+        """Async version of iter_native."""
+        return await sync_to_async(
+            lambda: list(self.iter_native(
+                result, timeout=timeout, interval=interval, no_ack=no_ack,
+                on_message=on_message, on_interval=on_interval
+            )),
+            thread_sensitive=False
+        )()
 
     def cleanup(self):
         """Backend cleanup."""

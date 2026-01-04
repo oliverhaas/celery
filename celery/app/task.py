@@ -1,4 +1,5 @@
 """Task implementation: request context and the task base class."""
+import asyncio
 import sys
 
 from asgiref.sync import sync_to_async
@@ -409,6 +410,7 @@ class Task:
         _task_stack.push(self)
         self.push_request(args=args, kwargs=kwargs)
         try:
+            # Returns whatever run() returns - if run() is async, returns a coroutine
             return self.run(*args, **kwargs)
         finally:
             self.pop_request()
@@ -427,6 +429,22 @@ class Task:
     def run(self, *args, **kwargs):
         """The body of the task executed by workers."""
         raise NotImplementedError('Tasks must define the run method.')
+
+    async def arun(self, *args, **kwargs):
+        """Async version of the task body.
+
+        Override this method to define an async task. If not overridden,
+        this will delegate to :meth:`run` using sync_to_async.
+
+        Example:
+            .. code-block:: python
+
+                class MyAsyncTask(Task):
+                    async def arun(self, x, y):
+                        result = await some_async_operation(x, y)
+                        return result
+        """
+        return await sync_to_async(self.run, thread_sensitive=False)(*args, **kwargs)
 
     def start_strategy(self, app, consumer, **kwargs):
         return instantiate(self.Strategy, self, app, consumer, **kwargs)
@@ -697,8 +715,10 @@ class Task:
 
             eager_args, eager_kwargs = await sync_to_async(_eager_apply, thread_sensitive=False)()
             with denied_join_result():
-                return self.apply(eager_args, eager_kwargs, task_id=task_id or uuid(),
-                                  link=link, link_error=link_error, **options)
+                # Use aapply() which uses the async tracer - this properly handles
+                # async task functions without blocking the event loop
+                return await self.aapply(eager_args, eager_kwargs, task_id=task_id or uuid(),
+                                         link=link, link_error=link_error, **options)
         else:
             # Normal path: delegate to asend_task which has its own shared-core design
             return await app.asend_task(
@@ -1023,16 +1043,28 @@ class Task:
                      logfile=None, loglevel=None, headers=None, **options):
         """Async version of :meth:`apply`.
 
+        If the task's run method is async, it is awaited directly.
+        If it's sync, it's wrapped with sync_to_async.
+
         Arguments and return value are the same as :meth:`apply`.
         """
-        task, args, kwargs, task_id, retries, throw, request, tracer = self._prepare_apply(
+        # trace imports Task, so need to import inline.
+        from celery.app.trace import build_async_tracer
+
+        task, args, kwargs, task_id, retries, throw, request, _ = self._prepare_apply(
             args=args, kwargs=kwargs, link=link, link_error=link_error,
             task_id=task_id, retries=retries, throw=throw,
             logfile=logfile, loglevel=loglevel, headers=headers, **options
         )
 
-        # Task execution - wrap with sync_to_async
-        ret = await sync_to_async(tracer, thread_sensitive=False)(task_id, args, kwargs, request)
+        # Build async tracer that can await async tasks directly
+        async_tracer = build_async_tracer(
+            task.name, task, eager=True,
+            propagate=throw, app=self._get_app(),
+        )
+
+        # Task execution with native async tracer
+        ret = await async_tracer(task_id, args, kwargs, request)
         retval, tb, state, retry_sig = self._process_apply_result(ret, retries, task_id)
 
         if retry_sig is not None:
