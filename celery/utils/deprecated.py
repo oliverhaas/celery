@@ -1,7 +1,6 @@
 """Deprecation utilities."""
 import warnings
-
-from vine.utils import wraps
+from functools import wraps
 
 from celery.exceptions import CDeprecationWarning, CPendingDeprecationWarning
 

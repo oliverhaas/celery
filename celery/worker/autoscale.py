@@ -12,7 +12,7 @@ import threading
 from time import monotonic, sleep
 
 from celery import bootsteps
-from celery.utils.asyncio_compat import DummyLock
+from celery.utils.scheduling import DummyLock
 from celery.utils.log import get_logger
 from celery.utils.threads import bgThread
 

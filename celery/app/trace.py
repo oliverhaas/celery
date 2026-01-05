@@ -11,7 +11,7 @@ import time
 from collections import namedtuple
 from warnings import warn
 
-from celery.utils.billiard_compat import ExceptionInfo, ExceptionWithTraceback
+from celery.exceptions import ExceptionInfo, ExceptionWithTraceback
 from kombu.exceptions import EncodeError
 from kombu.serialization import loads as loads_message
 from kombu.serialization import prepare_accept_content

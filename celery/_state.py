@@ -162,7 +162,7 @@ def _app_or_default(app=None):
 
 def _app_or_default_trace(app=None):  # pragma: no cover
     from traceback import print_stack
-    from celery.utils.billiard_compat import current_process
+    from celery.platforms import current_process
     if app is None:
         if getattr(_tls, 'current_app', None):
             print('-- RETURNING TO CURRENT APP --')  # +

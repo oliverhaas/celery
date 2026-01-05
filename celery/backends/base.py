@@ -15,7 +15,7 @@ from datetime import timedelta
 from functools import partial
 from weakref import WeakValueDictionary
 
-from celery.utils.billiard_compat import ExceptionInfo
+from celery.exceptions import ExceptionInfo
 from kombu.serialization import dumps, loads, prepare_accept_content
 from kombu.serialization import registry as serializer_registry
 from kombu.utils.encoding import bytes_to_str, ensure_bytes

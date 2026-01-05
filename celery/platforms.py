@@ -12,14 +12,85 @@ import os
 import platform as _platform
 import signal as _signal
 import sys
+import threading
 import warnings
 from contextlib import contextmanager
 
-from celery.utils.billiard_compat import close_open_fds, current_process, get_fdmax
-from celery.utils.billiard_compat import set_pdeathsig as _set_pdeathsig
 # fileno used to be in this module
 from kombu.utils.compat import maybe_fileno
 from kombu.utils.encoding import safe_str
+
+
+# =============================================================================
+# Process utilities (inline, formerly from billiard_compat)
+# =============================================================================
+
+
+class _FakeProcess:
+    """Fake process object for threading-based execution."""
+
+    _name: str | None = None
+    _ident: int | None = None
+
+    @property
+    def name(self) -> str:
+        return self._name or f"Thread-{threading.current_thread().ident}"
+
+    @name.setter
+    def name(self, value: str) -> None:
+        self._name = value
+
+    @property
+    def ident(self) -> int | None:
+        return self._ident or os.getpid()
+
+    @property
+    def pid(self) -> int | None:
+        return self.ident
+
+    def __reduce__(self):
+        return current_process, ()
+
+
+_current_process: _FakeProcess | None = None
+
+
+def current_process() -> _FakeProcess:
+    """Return the current process object."""
+    global _current_process
+    if _current_process is None:
+        _current_process = _FakeProcess()
+    return _current_process
+
+
+def get_fdmax(default: int = 1024) -> int:
+    """Return the maximum file descriptor number."""
+    try:
+        import resource
+        return resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+    except (ImportError, ValueError):
+        return default
+
+
+def close_open_fds(keep: set[int] | None = None) -> None:
+    """Close all open file descriptors except those in keep."""
+    keep = keep or set()
+    keep.add(0)  # stdin
+    keep.add(1)  # stdout
+    keep.add(2)  # stderr
+
+    fdmax = get_fdmax()
+    for fd in range(3, fdmax):
+        if fd not in keep:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def _set_pdeathsig(sig: int = _signal.SIGTERM) -> bool:
+    """Set parent death signal (no-op in asyncio mode)."""
+    return False
 
 from .exceptions import SecurityError, SecurityWarning, reraise
 from .local import try_import

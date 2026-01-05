@@ -17,7 +17,7 @@ from unittest.mock import ANY, DEFAULT, MagicMock, Mock, patch
 import pytest
 from kombu import Exchange, Queue
 from pydantic import BaseModel, ValidationInfo, model_validator
-from vine import promise
+from celery.utils.promises import promise
 
 from celery import Celery, _state
 from celery import app as _app

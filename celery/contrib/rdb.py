@@ -46,7 +46,7 @@ import socket
 import sys
 from pdb import Pdb
 
-from celery.utils.billiard_compat import current_process
+from celery.platforms import current_process
 
 __all__ = (
     'CELERY_RDB_HOST', 'CELERY_RDB_PORT', 'DEFAULT_PORT',

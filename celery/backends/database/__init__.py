@@ -1,8 +1,7 @@
 """SQLAlchemy result store backend."""
 import logging
 from contextlib import contextmanager
-
-from vine.utils import wraps
+from functools import wraps
 
 from celery import states
 from celery.backends.base import BaseBackend

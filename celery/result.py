@@ -10,7 +10,7 @@ from asgiref.sync import sync_to_async
 
 from dateutil.parser import isoparse
 from kombu.utils.objects import cached_property
-from vine import Thenable, barrier, promise
+from celery.utils.promises import Thenable, barrier, promise
 
 from . import current_app, states
 from ._state import _set_task_join_will_block, task_join_will_block

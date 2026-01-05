@@ -13,7 +13,8 @@ There are two types of remote control commands:
 """
 import warnings
 
-from celery.utils.billiard_compat import TERM_SIGNAME
+# Signal name constant
+TERM_SIGNAME = "SIGTERM"
 from kombu.matcher import match
 from kombu.pidbox import Mailbox
 from kombu.utils.compat import register_after_fork

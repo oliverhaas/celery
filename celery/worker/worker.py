@@ -17,8 +17,12 @@ import sys
 from datetime import datetime, timezone
 from time import sleep
 
-from celery.utils.billiard_compat import cpu_count
 from kombu.utils.compat import detect_environment
+
+
+def cpu_count() -> int:
+    """Return the number of CPUs."""
+    return os.cpu_count() or 1
 
 from celery import bootsteps
 from celery import concurrency as _concurrency

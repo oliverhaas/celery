@@ -9,7 +9,10 @@ from datetime import datetime
 from time import monotonic, time
 from weakref import ref
 
-from celery.utils.billiard_compat import TERM_SIGNAME, ExceptionWithTraceback
+from celery.exceptions import ExceptionWithTraceback
+
+# Signal name constant - in asyncio mode we use threads not processes
+TERM_SIGNAME = "SIGTERM"
 from kombu.utils.encoding import safe_repr, safe_str
 from kombu.utils.objects import cached_property
 

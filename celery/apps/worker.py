@@ -10,11 +10,40 @@ import logging
 import os
 import platform as _platform
 import sys
+import threading
 from datetime import datetime
 from functools import partial
 
-from celery.utils.billiard_compat import REMAP_SIGTERM, current_process
 from kombu.utils.encoding import safe_str
+
+# Signal constants - in asyncio mode we use threads not processes
+REMAP_SIGTERM = os.environ.get("REMAP_SIGTERM")
+
+
+class _FakeProcess:
+    """Fake process object for threading-based execution."""
+
+    _name: str | None = None
+
+    @property
+    def name(self) -> str:
+        return self._name or f"Thread-{threading.current_thread().ident}"
+
+    @name.setter
+    def name(self, value: str) -> None:
+        self._name = value
+
+
+_current_process: _FakeProcess | None = None
+
+
+def current_process() -> _FakeProcess:
+    """Return the current process object."""
+    global _current_process
+    if _current_process is None:
+        _current_process = _FakeProcess()
+        _current_process._name = "MainProcess"
+    return _current_process
 
 from celery import VERSION_BANNER, platforms, signals
 from celery.app import trace

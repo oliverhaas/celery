@@ -2,7 +2,7 @@
 import atexit
 
 from celery import bootsteps
-from celery.utils.asyncio_compat import (
+from celery.utils.scheduling import (
     DummyLock,
     Hub as _Hub,
     LaxBoundedSemaphore,

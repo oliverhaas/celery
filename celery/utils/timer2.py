@@ -12,7 +12,7 @@ from threading import TIMEOUT_MAX as THREAD_TIMEOUT_MAX
 from time import sleep
 from typing import Any, Callable, Iterator, Optional, Tuple
 
-from celery.utils.asyncio_compat import Entry, Timer as Schedule, to_timestamp
+from celery.utils.scheduling import Entry, Timer as Schedule, to_timestamp
 
 logger = logging.getLogger(__name__)
 

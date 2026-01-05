@@ -136,7 +136,7 @@ if C_BENCH:  # pragma: no cover
     import atexit
     from time import monotonic
 
-    from celery.utils.billiard_compat import current_process
+    from celery.platforms import current_process
 
     from celery.utils.debug import memdump, sample_mem
 

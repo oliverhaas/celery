@@ -1,5 +1,5 @@
 """Tasks auto-retry functionality."""
-from vine.utils import wraps
+from functools import wraps
 
 from celery.exceptions import Ignore, Retry
 from celery.utils.time import get_exponential_backoff_interval

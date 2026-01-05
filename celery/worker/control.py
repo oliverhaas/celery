@@ -3,8 +3,9 @@ import io
 import tempfile
 from collections import UserDict, defaultdict, namedtuple
 
-from celery.utils.billiard_compat import TERM_SIGNAME
 from kombu.utils.encoding import safe_repr
+
+TERM_SIGNAME = "SIGTERM"
 
 from celery.exceptions import WorkerShutdown
 from celery.platforms import EX_OK

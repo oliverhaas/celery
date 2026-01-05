@@ -21,7 +21,7 @@ from asgiref.sync import sync_to_async
 from kombu.utils.functional import fxrange, reprcall
 from kombu.utils.objects import cached_property
 from kombu.utils.uuid import uuid
-from vine import barrier
+from celery.utils.promises import barrier
 
 from celery._state import current_app
 from celery.exceptions import CPendingDeprecationWarning

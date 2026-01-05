@@ -6,7 +6,7 @@ import time
 from unittest.mock import Mock, patch
 
 import pytest
-from vine import promise
+from celery.utils.promises import promise
 
 from celery.backends.asynchronous import E_CELERY_RESTART_REQUIRED, BaseResultConsumer
 from celery.backends.base import Backend

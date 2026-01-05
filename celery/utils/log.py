@@ -278,7 +278,7 @@ def reset_multiprocessing_logger():
 
 def current_process():
     """Return the current process object."""
-    from celery.utils.billiard_compat import current_process as _current_process
+    from celery.platforms import current_process as _current_process
 
     return _current_process()
 

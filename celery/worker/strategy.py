@@ -2,7 +2,7 @@
 import logging
 
 from celery import signals
-from celery.utils.asyncio_compat import to_timestamp
+from celery.utils.scheduling import to_timestamp
 from celery.app import trace as _app_trace
 from celery.exceptions import InvalidTaskError
 from celery.utils.imports import symbol_by_name

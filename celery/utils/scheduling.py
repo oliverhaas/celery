@@ -1,7 +1,7 @@
-"""Asyncio compatibility module.
+"""Scheduling primitives for celery-asyncio.
 
-Provides asyncio-native replacements for kombu.asynchronous functionality.
-celery-asyncio uses native asyncio instead of kombu's hub-based event loop.
+Provides Timer, Hub, and related scheduling components for the asyncio-based
+worker. These are native asyncio implementations.
 """
 from __future__ import annotations
 

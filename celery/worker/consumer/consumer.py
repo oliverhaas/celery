@@ -7,21 +7,97 @@ up and running.
 import errno
 import logging
 import os
+import threading
+import time
 import warnings
 from collections import defaultdict
+from functools import partial
 from time import sleep
 
-from celery.utils.asyncio_compat import DummyLock
-from celery.utils.billiard_compat import RestartFreqExceeded, restart_state
 from kombu.exceptions import ContentDisallowed, DecodeError
 from kombu.utils.encoding import safe_repr
 from kombu.utils.limits import TokenBucket
-from vine import ppartial, promise
 
 from celery import bootsteps, signals
 from celery.app.trace import build_tracer
-from celery.exceptions import (CPendingDeprecationWarning, InvalidTaskError, NotRegistered, WorkerShutdown,
-                               WorkerTerminate)
+from celery.exceptions import (CPendingDeprecationWarning, InvalidTaskError, NotRegistered, RestartFreqExceeded,
+                               WorkerShutdown, WorkerTerminate)
+
+
+class DummyLock:
+    """Dummy lock that does nothing."""
+
+    def acquire(self, blocking=True, timeout=-1):
+        return True
+
+    def release(self):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+
+class _RestartState:
+    """Track restart frequency."""
+
+    def __init__(self, maxR=100, maxT=100):
+        self.maxR = maxR
+        self.maxT = maxT
+        self.R = 0
+        self.T = None
+
+    def step(self, now=None):
+        now = now or time.time()
+        if self.T is None:
+            self.T = now
+        self.R += 1
+        if self.R >= self.maxR:
+            if now - self.T < self.maxT:
+                raise RestartFreqExceeded(f"Max restarts ({self.maxR}) exceeded in {self.maxT}s")
+            self.R = 0
+            self.T = now
+
+
+def restart_state(maxR=100, maxT=100):
+    """Create a restart state tracker."""
+    return _RestartState(maxR, maxT)
+
+
+# Simplified promise/partial - just use functools.partial
+ppartial = partial
+
+
+class promise:
+    """Simple promise for callback chaining."""
+
+    def __init__(self, fun, args=None, kwargs=None, on_error=None):
+        self.fun = fun
+        self.args = args or ()
+        self.kwargs = kwargs or {}
+        self.on_error = on_error
+        self._then_callbacks = []
+
+    def __call__(self):
+        try:
+            result = self.fun(*self.args, **self.kwargs)
+            for callback, error_handler in self._then_callbacks:
+                try:
+                    callback()
+                except Exception as exc:
+                    if error_handler:
+                        error_handler(exc)
+            return result
+        except Exception as exc:
+            if self.on_error:
+                self.on_error(exc)
+            raise
+
+    def then(self, callback, on_error=None):
+        self._then_callbacks.append((callback, on_error))
+        return self
 from celery.utils.functional import noop
 from celery.utils.log import get_logger
 from celery.utils.nodenames import gethostname

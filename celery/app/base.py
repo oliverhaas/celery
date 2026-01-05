@@ -34,7 +34,7 @@ def calculate_routing_key(countdown, routing_key):
     )
 from kombu.utils.objects import cached_property
 from kombu.utils.uuid import uuid
-from vine import starpromise
+from celery.utils.promises import starpromise
 
 from celery import platforms, signals
 from celery._state import (

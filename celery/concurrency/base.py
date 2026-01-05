@@ -5,10 +5,9 @@ import sys
 import time
 from typing import Any, Dict
 
-from celery.utils.billiard_compat import ExceptionInfo, WorkerLostError
 from kombu.utils.encoding import safe_repr
 
-from celery.exceptions import WorkerShutdown, WorkerTerminate, reraise
+from celery.exceptions import ExceptionInfo, WorkerLostError, WorkerShutdown, WorkerTerminate, reraise
 from celery.utils import timer2
 from celery.utils.log import get_logger
 from celery.utils.text import truncate

@@ -15,11 +15,27 @@ from functools import total_ordering
 from pickle import UnpicklingError
 from threading import Event, Thread
 
+import signal
 from multiprocessing import Process
 
-from celery.utils.billiard_compat import ensure_multiprocessing, reset_signals
 from kombu.utils.functional import maybe_evaluate, reprcall
+
+
 from kombu.utils.objects import cached_property
+
+
+def reset_signals():
+    """Reset signal handlers to defaults."""
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, signal.SIG_DFL)
+        except (OSError, ValueError):
+            pass
+
+
+def ensure_multiprocessing():
+    """Ensure multiprocessing is available (no-op in asyncio mode)."""
+    pass
 
 from . import __version__, platforms, signals
 from .exceptions import reraise

@@ -5,7 +5,7 @@ from heapq import heappush
 from operator import itemgetter
 
 from celery import bootsteps
-from celery.utils.asyncio_compat import DummyLock
+from celery.utils.scheduling import DummyLock
 from kombu import Consumer
 from kombu.exceptions import ContentDisallowed, DecodeError
 from celery.utils.log import get_logger

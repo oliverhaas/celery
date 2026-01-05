@@ -1,61 +1,16 @@
-"""Celery error types.
-
-Error Hierarchy
-===============
-
-- :exc:`Exception`
-    - :exc:`celery.exceptions.CeleryError`
-        - :exc:`~celery.exceptions.ImproperlyConfigured`
-        - :exc:`~celery.exceptions.SecurityError`
-        - :exc:`~celery.exceptions.TaskPredicate`
-            - :exc:`~celery.exceptions.Ignore`
-            - :exc:`~celery.exceptions.Reject`
-            - :exc:`~celery.exceptions.Retry`
-        - :exc:`~celery.exceptions.TaskError`
-            - :exc:`~celery.exceptions.QueueNotFound`
-            - :exc:`~celery.exceptions.IncompleteStream`
-            - :exc:`~celery.exceptions.NotRegistered`
-            - :exc:`~celery.exceptions.AlreadyRegistered`
-            - :exc:`~celery.exceptions.TimeoutError`
-            - :exc:`~celery.exceptions.MaxRetriesExceededError`
-            - :exc:`~celery.exceptions.TaskRevokedError`
-            - :exc:`~celery.exceptions.InvalidTaskError`
-            - :exc:`~celery.exceptions.ChordError`
-        - :exc:`~celery.exceptions.BackendError`
-            - :exc:`~celery.exceptions.BackendGetMetaError`
-            - :exc:`~celery.exceptions.BackendStoreError`
-    - :class:`kombu.exceptions.KombuError`
-        - :exc:`~celery.exceptions.OperationalError`
-
-            Raised when a transport connection error occurs while
-            sending a message (be it a task, remote control command error).
-
-            .. note::
-                This exception does not inherit from
-                :exc:`~celery.exceptions.CeleryError`.
-    - **billiard errors** (prefork pool)
-        - :exc:`~celery.exceptions.SoftTimeLimitExceeded`
-        - :exc:`~celery.exceptions.TimeLimitExceeded`
-        - :exc:`~celery.exceptions.WorkerLostError`
-        - :exc:`~celery.exceptions.Terminated`
-- :class:`UserWarning`
-    - :class:`~celery.exceptions.CeleryWarning`
-        - :class:`~celery.exceptions.AlwaysEagerIgnored`
-        - :class:`~celery.exceptions.DuplicateNodenameWarning`
-        - :class:`~celery.exceptions.FixupWarning`
-        - :class:`~celery.exceptions.NotConfigured`
-        - :class:`~celery.exceptions.SecurityWarning`
-- :exc:`BaseException`
-    - :exc:`SystemExit`
-        - :exc:`~celery.exceptions.WorkerTerminate`
-        - :exc:`~celery.exceptions.WorkerShutdown`
-"""
+"""Celery error types."""
 
 import numbers
+import sys
+import traceback
+from types import TracebackType
+from typing import TYPE_CHECKING
 
-from celery.utils.billiard_compat import SoftTimeLimitExceeded, Terminated, TimeLimitExceeded, WorkerLostError
 from click import ClickException
 from kombu.exceptions import OperationalError
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 __all__ = (
     'reraise',
@@ -83,9 +38,12 @@ __all__ = (
     # Backend related errors.
     'BackendError', 'BackendGetMetaError', 'BackendStoreError',
 
-    # Billiard task errors.
+    # Task execution errors.
     'SoftTimeLimitExceeded', 'TimeLimitExceeded',
-    'WorkerLostError', 'Terminated',
+    'WorkerLostError', 'Terminated', 'RestartFreqExceeded',
+
+    # Exception info utilities.
+    'ExceptionInfo', 'ExceptionWithTraceback',
 
     # Deprecation warnings (forcing Python to emit them).
     'CPendingDeprecationWarning', 'CDeprecationWarning',
@@ -279,6 +237,27 @@ class WorkerShutdown(SystemExit):
     """Signals that the worker should perform a warm shutdown."""
 
 
+# Task execution exceptions (formerly from billiard)
+class SoftTimeLimitExceeded(Exception):
+    """The soft time limit has been exceeded."""
+
+
+class TimeLimitExceeded(Exception):
+    """The time limit has been exceeded."""
+
+
+class WorkerLostError(Exception):
+    """The worker processing the task has been lost."""
+
+
+class Terminated(Exception):
+    """The process was terminated."""
+
+
+class RestartFreqExceeded(Exception):
+    """Too many restarts within a time window."""
+
+
 class BackendError(Exception):
     """An issue writing or reading to/from the backend."""
 
@@ -310,3 +289,58 @@ class CeleryCommandException(ClickException):
     def __init__(self, message, exit_code):
         super().__init__(message=message)
         self.exit_code = exit_code
+
+
+# =============================================================================
+# Exception Info - for storing traceback information
+# =============================================================================
+
+
+class ExceptionInfo:
+    """Exception wrapping an exception and its traceback.
+
+    This stores exception information for later reporting.
+    """
+
+    exception: BaseException | None
+    type: type[BaseException] | None
+    tb: TracebackType | None
+    internal: bool
+
+    def __init__(
+        self,
+        exc_info: tuple[type[BaseException], BaseException, TracebackType | None] | None = None,
+        internal: bool = False,
+    ):
+        self.internal = internal
+        if exc_info is None:
+            exc_info = sys.exc_info()
+        self.type, self.exception, self.tb = exc_info
+        self.traceback = "".join(traceback.format_exception(*exc_info)) if exc_info[0] else ""
+
+    @property
+    def exc_info(self) -> tuple[type[BaseException] | None, BaseException | None, TracebackType | None]:
+        return self.type, self.exception, self.tb
+
+    def __str__(self) -> str:
+        return self.traceback
+
+    def __repr__(self) -> str:
+        return f"<{type(self).__name__}: {self.exception!r}>"
+
+
+class ExceptionWithTraceback:
+    """Exception wrapper that includes stringified traceback.
+
+    Used for serialization to result backends.
+    """
+
+    exc: BaseException
+    tb: str
+
+    def __init__(self, exc: BaseException, tb: str | None = None):
+        self.exc = exc
+        self.tb = tb or ""
+
+    def __reduce__(self) -> tuple["Callable", tuple[BaseException, str]]:
+        return self.__class__, (self.exc, self.tb)
