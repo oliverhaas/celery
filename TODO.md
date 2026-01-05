@@ -2,39 +2,38 @@
 
 ## Time Limits / Task Cancellation
 
-The old billiard-based Celery used signals (SIGUSR1) to raise `SoftTimeLimitExceeded` inside running tasks. With asyncio, we need a different approach since we can't inject exceptions into arbitrary code points.
+### Decision: Drop soft time limit, use task.cancel()
 
-### Options to explore:
+The old billiard-based Celery used signals (SIGUSR1) to raise `SoftTimeLimitExceeded` inside running tasks. With asyncio, we cannot inject exceptions into arbitrary code points.
 
-1. **asyncio.timeout() context manager** (Python 3.11+)
-   - Wrap task execution in `async with asyncio.timeout(soft_limit):`
-   - Raises `asyncio.TimeoutError` which can be caught and converted to `SoftTimeLimitExceeded`
-   - Only works for async tasks, not sync tasks running in thread pool
+**Research findings:**
+- `task.cancel(msg)` is the only way to inject an exception into a running asyncio task
+- It raises `CancelledError` at the next `await` point
+- For sync tasks in ThreadPoolExecutor, there's no reliable way to interrupt them
+- `PyThreadState_SetAsyncExc` exists but only works for pure Python code, not blocking I/O
 
-2. **Callback-based approach**
-   - Add `on_soft_timeout()` and `on_hard_timeout()` handlers to tasks
-   - Less flexible than exceptions but predictable
-   - Would require tasks to be designed with this in mind
+**Decision:** Drop the soft time limit feature. Use `task.cancel()` for async tasks.
 
-3. **Task cancellation with custom exception**
-   - Use `task.cancel(msg="soft_timeout")`
-   - Raises `asyncio.CancelledError` which can be inspected
-   - Task can catch and handle gracefully
+### How time limits work in celery-asyncio:
 
-4. **Cooperative timeout checking**
-   - Provide `task.check_timeout()` method that tasks can call periodically
-   - Raises `SoftTimeLimitExceeded` if timeout exceeded
-   - Requires task cooperation
+1. **Async tasks**: Use `asyncio.timeout()` or `asyncio.wait_for()` with timeout
+   - Raises `asyncio.TimeoutError` / `CancelledError` at next `await`
+   - Task can catch and handle gracefully if needed
 
-### Decision needed:
-- For **async tasks**: `asyncio.timeout()` seems most natural
-- For **sync tasks in thread pool**: May need threading events or cooperative checking
-- Consider if we want to support raising exceptions mid-execution at all, or move to callback model
+2. **Sync tasks**: Hard timeout only
+   - Worker stops waiting for result after timeout
+   - Task may continue running in background (fire-and-forget)
+   - No way to cleanly interrupt blocking sync code
+
+3. **Migration note**: Tasks relying on `SoftTimeLimitExceeded` need refactoring
+   - Use async tasks with try/except for `CancelledError`
+   - Or redesign to use cooperative checking
 
 ## Other TODOs
 
-- [ ] Implement time limit mechanism for asyncio tasks
+- [ ] Implement hard time limit using `asyncio.wait_for()` / `asyncio.timeout()`
 - [ ] Test worker with actual Redis transport (kombu-asyncio)
 - [ ] Review and update test suite for asyncio compatibility
 - [ ] Document migration path from celery to celery-asyncio
 - [ ] Performance benchmarks vs traditional celery
+- [ ] Consider removing `SoftTimeLimitExceeded` exception or repurposing it
