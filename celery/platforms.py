@@ -15,19 +15,14 @@ import sys
 import warnings
 from contextlib import contextmanager
 
-from billiard.compat import close_open_fds, get_fdmax
-from billiard.util import set_pdeathsig as _set_pdeathsig
+from celery.utils.billiard_compat import close_open_fds, current_process, get_fdmax
+from celery.utils.billiard_compat import set_pdeathsig as _set_pdeathsig
 # fileno used to be in this module
 from kombu.utils.compat import maybe_fileno
 from kombu.utils.encoding import safe_str
 
 from .exceptions import SecurityError, SecurityWarning, reraise
 from .local import try_import
-
-try:
-    from billiard.process import current_process
-except ImportError:
-    current_process = None
 
 _setproctitle = try_import('setproctitle')
 resource = try_import('resource')

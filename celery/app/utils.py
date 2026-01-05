@@ -25,7 +25,7 @@ __all__ = (
 #: Format used to generate bug-report information.
 BUGREPORT_INFO = """
 software -> celery:{celery_v} kombu:{kombu_v} py:{py_v}
-            billiard:{billiard_v} {driver_v}
+            {driver_v}
 platform -> system:{system} arch:{arch}
             kernel version:{kernel_version} imp:{py_i}
 loader   -> {loader}
@@ -345,7 +345,6 @@ def filter_hidden_settings(conf):
 
 def bugreport(app):
     """Return a string containing information useful in bug-reports."""
-    import billiard
     import kombu
 
     import celery
@@ -365,7 +364,6 @@ def bugreport(app):
         py_i=pyimplementation(),
         celery_v=celery.VERSION_BANNER,
         kombu_v=kombu.__version__,
-        billiard_v=billiard.__version__,
         py_v=_platform.python_version(),
         driver_v=driver_v,
         transport=transport,

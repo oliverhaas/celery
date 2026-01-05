@@ -1,9 +1,9 @@
 """Scheduler for Python functions.
 
 .. note::
-    This is used for the thread-based worker only,
-    not for amqp/redis/sqs/qpid where :mod:`kombu.asynchronous.timer` is used.
+    This is used for the thread-based worker only.
 """
+import logging
 import os
 import sys
 import threading
@@ -12,9 +12,9 @@ from threading import TIMEOUT_MAX as THREAD_TIMEOUT_MAX
 from time import sleep
 from typing import Any, Callable, Iterator, Optional, Tuple
 
-from kombu.asynchronous.timer import Entry
-from kombu.asynchronous.timer import Timer as Schedule
-from kombu.asynchronous.timer import logger, to_timestamp
+from celery.utils.asyncio_compat import Entry, Timer as Schedule, to_timestamp
+
+logger = logging.getLogger(__name__)
 
 TIMER_DEBUG = os.environ.get('TIMER_DEBUG')
 

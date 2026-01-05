@@ -17,7 +17,7 @@ import sys
 from datetime import datetime, timezone
 from time import sleep
 
-from billiard import cpu_count
+from celery.utils.billiard_compat import cpu_count
 from kombu.utils.compat import detect_environment
 
 from celery import bootsteps

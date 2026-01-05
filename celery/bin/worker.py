@@ -42,23 +42,15 @@ class WorkersPool(click.Choice):
         super().__init__(concurrency.get_available_pool_names())
 
     def convert(self, value, param, ctx):
-        # Pools like eventlet/gevent needs to patch libs as early
-        # as possible.
         if isinstance(value, type) and issubclass(value, BasePool):
             return value
 
         value = super().convert(value, param, ctx)
         worker_pool = ctx.obj.app.conf.worker_pool
-        if value == 'prefork' and worker_pool:
-            # If we got the default pool through the CLI
-            # we need to check if the worker pool was configured.
-            # If the worker pool was configured, we shouldn't use the default.
-            value = concurrency.get_implementation(worker_pool)
-        else:
-            value = concurrency.get_implementation(value)
+        value = concurrency.get_implementation(value)
 
-            if not value:
-                value = concurrency.get_implementation(worker_pool)
+        if not value:
+            value = concurrency.get_implementation(worker_pool)
 
         return value
 
@@ -204,7 +196,7 @@ def detach(path, argv, logfile=None, pidfile=None, uid=None,
                    " on your system.")
 @click.option('-P',
               '--pool',
-              default='prefork',
+              default='threads',
               type=WORKERS_POOL,
               cls=CeleryOption,
               help_group="Pool Options",

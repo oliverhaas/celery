@@ -13,8 +13,7 @@ import sys
 from datetime import datetime
 from functools import partial
 
-from billiard.common import REMAP_SIGTERM
-from billiard.process import current_process
+from celery.utils.billiard_compat import REMAP_SIGTERM, current_process
 from kombu.utils.encoding import safe_str
 
 from celery import VERSION_BANNER, platforms, signals

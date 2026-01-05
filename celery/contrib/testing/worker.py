@@ -42,21 +42,8 @@ class TestWorkController(worker.WorkController):
 
         super().__init__(*args, **kwargs)
 
-        if self.pool_cls.__module__.split('.')[-1] == 'prefork':
-            from billiard import Queue
-            self.logger_queue = Queue()
-            self.pid = os.getpid()
-
-            try:
-                from tblib import pickling_support
-                pickling_support.install()
-            except ImportError:
-                pass
-
-            # collect logs from forked process.
-            # XXX: those logs will appear twice in the live log
-            self.queue_listener = logging.handlers.QueueListener(self.logger_queue, logging.getLogger())
-            self.queue_listener.start()
+        # In asyncio mode, we don't use prefork pools, so no logger queue needed
+        pass
 
     class QueueHandler(logging.handlers.QueueHandler):
         def prepare(self, record):

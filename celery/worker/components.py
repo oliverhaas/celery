@@ -1,32 +1,21 @@
 """Worker-level Bootsteps."""
 import atexit
-import warnings
-
-from kombu.asynchronous import Hub as _Hub
-from kombu.asynchronous import get_event_loop, set_event_loop
-from kombu.asynchronous.semaphore import DummyLock, LaxBoundedSemaphore
-from kombu.asynchronous.timer import Timer as _Timer
 
 from celery import bootsteps
+from celery.utils.asyncio_compat import (
+    DummyLock,
+    Hub as _Hub,
+    LaxBoundedSemaphore,
+    Timer as _Timer,
+    get_event_loop,
+    set_event_loop,
+)
 from celery._state import _set_task_join_will_block
 from celery.exceptions import ImproperlyConfigured
 from celery.platforms import IS_WINDOWS
 from celery.utils.log import worker_logger as logger
 
 __all__ = ('Timer', 'Hub', 'Pool', 'Beat', 'StateDB', 'Consumer')
-
-GREEN_POOLS = {'eventlet', 'gevent'}
-
-ERR_B_GREEN = """\
--B option doesn't work with eventlet/gevent pools: \
-use standalone beat instead.\
-"""
-
-W_POOL_SETTING = """
-The worker_pool setting shouldn't be used to select the eventlet/gevent
-pools, instead you *must use the -P* argument so that patches are applied
-as early as possible.
-"""
 
 
 class Timer(bootsteps.Step):
@@ -86,13 +75,8 @@ class Hub(bootsteps.StartStopStep):
     def _patch_thread_primitives(self, w):
         # make clock use dummy lock
         w.app.clock.mutex = DummyLock()
-        # multiprocessing's ApplyResult uses this lock.
-        try:
-            from billiard import pool
-        except ImportError:
-            pass
-        else:
-            pool.Lock = DummyLock
+        # In asyncio mode, we don't use billiard pools
+        pass
 
 
 class Pool(bootsteps.StartStopStep):
@@ -135,8 +119,6 @@ class Pool(bootsteps.StartStopStep):
     def create(self, w):
         semaphore = None
         max_restarts = None
-        if w.app.conf.worker_pool in GREEN_POOLS:  # pragma: no cover
-            warnings.warn(UserWarning(W_POOL_SETTING))
         threaded = not w.use_eventloop or IS_WINDOWS
         procs = w.min_concurrency
         w.process_task = w._process_task
@@ -191,8 +173,6 @@ class Beat(bootsteps.StartStopStep):
 
     def create(self, w):
         from celery.beat import EmbeddedService
-        if w.pool_cls.__module__.endswith(('gevent', 'eventlet')):
-            raise ImproperlyConfigured(ERR_B_GREEN)
         b = w.beat = EmbeddedService(w.app,
                                      schedule_filename=w.schedule_filename,
                                      scheduler_cls=w.scheduler)

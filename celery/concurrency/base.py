@@ -5,8 +5,7 @@ import sys
 import time
 from typing import Any, Dict
 
-from billiard.einfo import ExceptionInfo
-from billiard.exceptions import WorkerLostError
+from celery.utils.billiard_compat import ExceptionInfo, WorkerLostError
 from kombu.utils.encoding import safe_repr
 
 from celery.exceptions import WorkerShutdown, WorkerTerminate, reraise

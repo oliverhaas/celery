@@ -9,8 +9,7 @@ from datetime import datetime
 from time import monotonic, time
 from weakref import ref
 
-from billiard.common import TERM_SIGNAME
-from billiard.einfo import ExceptionWithTraceback
+from celery.utils.billiard_compat import TERM_SIGNAME, ExceptionWithTraceback
 from kombu.utils.encoding import safe_repr, safe_str
 from kombu.utils.objects import cached_property
 

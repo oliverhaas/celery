@@ -25,7 +25,6 @@ classifiers = [
   "Topic :: System :: Distributed Computing",
 ]
 dependencies = [
-  "billiard>=4.2.1,<5.0",
   "kombu-asyncio>=6.0.0a1",
   "vine>=5.1.0,<6.0",
   "click>=8.1.2,<9.0",
@@ -51,9 +50,6 @@ auth = ["cryptography"]
 msgpack = ["msgpack"]
 yaml = ["PyYAML>=3.10"]
 
-# Concurrency (legacy - will be removed)
-eventlet = ["eventlet>=0.32.0"]
-gevent = ["gevent>=1.5.0"]
 
 # Transports and Backends
 redis = ["kombu-asyncio[redis]"]

@@ -15,9 +15,9 @@ from functools import total_ordering
 from pickle import UnpicklingError
 from threading import Event, Thread
 
-from billiard import ensure_multiprocessing
-from billiard.common import reset_signals
-from billiard.context import Process
+from multiprocessing import Process
+
+from celery.utils.billiard_compat import ensure_multiprocessing, reset_signals
 from kombu.utils.functional import maybe_evaluate, reprcall
 from kombu.utils.objects import cached_property
 

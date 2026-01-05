@@ -4,11 +4,10 @@ from functools import partial
 from heapq import heappush
 from operator import itemgetter
 
-from kombu import Consumer
-from kombu.asynchronous.semaphore import DummyLock
-from kombu.exceptions import ContentDisallowed, DecodeError
-
 from celery import bootsteps
+from celery.utils.asyncio_compat import DummyLock
+from kombu import Consumer
+from kombu.exceptions import ContentDisallowed, DecodeError
 from celery.utils.log import get_logger
 from celery.utils.objects import Bunch
 

@@ -11,9 +11,8 @@ import os
 import threading
 from time import monotonic, sleep
 
-from kombu.asynchronous.semaphore import DummyLock
-
 from celery import bootsteps
+from celery.utils.asyncio_compat import DummyLock
 from celery.utils.log import get_logger
 from celery.utils.threads import bgThread
 

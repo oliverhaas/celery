@@ -105,21 +105,10 @@ def _invoke_default_shell(locals):
               cls=CeleryOption,
               help_group="Shell Options",
               help="Don't add tasks to locals.")
-@click.option('--eventlet',
-              is_flag=True,
-              cls=CeleryOption,
-              help_group="Shell Options",
-              help="Use eventlet.")
-@click.option('--gevent',
-              is_flag=True,
-              cls=CeleryOption,
-              help_group="Shell Options",
-              help="Use gevent.")
 @click.pass_context
 @handle_preload_options
 def shell(ctx, ipython=False, bpython=False,
-          python=False, without_tasks=False, eventlet=False,
-          gevent=False, **kwargs):
+          python=False, without_tasks=False, **kwargs):
     """Start shell session with convenient access to celery symbols.
 
     The following symbols will be added to the main globals:
@@ -129,10 +118,6 @@ def shell(ctx, ipython=False, bpython=False,
     - all registered tasks.
     """
     sys.path.insert(0, os.getcwd())
-    if eventlet:
-        import_module('celery.concurrency.eventlet')
-    if gevent:
-        import_module('celery.concurrency.gevent')
     import celery
     app = ctx.obj.app
     app.loader.import_default_modules()

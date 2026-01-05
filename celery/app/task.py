@@ -3,7 +3,7 @@ import asyncio
 import sys
 
 from asgiref.sync import sync_to_async
-from billiard.einfo import ExceptionInfo, ExceptionWithTraceback
+from celery.utils.billiard_compat import ExceptionInfo, ExceptionWithTraceback
 from kombu import serialization
 from kombu.exceptions import OperationalError
 from kombu.utils.uuid import uuid

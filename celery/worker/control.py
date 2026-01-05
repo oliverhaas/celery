@@ -3,7 +3,7 @@ import io
 import tempfile
 from collections import UserDict, defaultdict, namedtuple
 
-from billiard.common import TERM_SIGNAME
+from celery.utils.billiard_compat import TERM_SIGNAME
 from kombu.utils.encoding import safe_repr
 
 from celery.exceptions import WorkerShutdown

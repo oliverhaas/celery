@@ -53,7 +53,7 @@ Error Hierarchy
 
 import numbers
 
-from billiard.exceptions import SoftTimeLimitExceeded, Terminated, TimeLimitExceeded, WorkerLostError
+from celery.utils.billiard_compat import SoftTimeLimitExceeded, Terminated, TimeLimitExceeded, WorkerLostError
 from click import ClickException
 from kombu.exceptions import OperationalError
 

@@ -261,33 +261,26 @@ class LoggingProxy:
 
 
 def get_multiprocessing_logger():
-    """Return the multiprocessing logger."""
-    try:
-        from billiard import util
-    except ImportError:
-        pass
-    else:
-        return util.get_logger()
+    """Return the multiprocessing logger.
+
+    In asyncio mode, we don't use billiard multiprocessing logging.
+    """
+    return None
 
 
 def reset_multiprocessing_logger():
-    """Reset multiprocessing logging setup."""
-    try:
-        from billiard import util
-    except ImportError:
-        pass
-    else:
-        if hasattr(util, '_logger'):  # pragma: no cover
-            util._logger = None
+    """Reset multiprocessing logging setup.
+
+    In asyncio mode, this is a no-op.
+    """
+    pass
 
 
 def current_process():
-    try:
-        from billiard import process
-    except ImportError:
-        pass
-    else:
-        return process.current_process()
+    """Return the current process object."""
+    from celery.utils.billiard_compat import current_process as _current_process
+
+    return _current_process()
 
 
 def current_process_index(base=1):

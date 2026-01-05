@@ -11,11 +11,9 @@ import warnings
 from collections import defaultdict
 from time import sleep
 
-from billiard.common import restart_state
-from billiard.exceptions import RestartFreqExceeded
-from kombu.asynchronous.semaphore import DummyLock
+from celery.utils.asyncio_compat import DummyLock
+from celery.utils.billiard_compat import RestartFreqExceeded, restart_state
 from kombu.exceptions import ContentDisallowed, DecodeError
-from kombu.utils.compat import _detect_environment
 from kombu.utils.encoding import safe_repr
 from kombu.utils.limits import TokenBucket
 from vine import ppartial, promise
@@ -225,12 +223,6 @@ class Consumer:
 
         if not hasattr(self, 'loop'):
             self.loop = loops.asynloop if hub else loops.synloop
-
-        if _detect_environment() == 'gevent':
-            # there's a gevent bug that causes timeouts to not be reset,
-            # so if the connection timeout is exceeded once, it can NEVER
-            # connect again.
-            self.app.conf.broker_connection_timeout = None
 
         self._pending_operations = []
 
