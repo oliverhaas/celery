@@ -3,6 +3,7 @@
 This module defines how the task execution is traced:
 errors are recorded, handlers are applied and so on.
 """
+import asyncio
 import logging
 import os
 import sys
@@ -41,7 +42,7 @@ from celery.utils.serialization import get_pickleable_etype, get_pickleable_exce
 
 
 __all__ = (
-    'TraceInfo', 'build_tracer', 'trace_task',
+    'TraceInfo', 'build_tracer', 'build_async_tracer', 'trace_task',
     'setup_worker_optimizations', 'reset_worker_optimizations',
 )
 
@@ -477,6 +478,10 @@ def build_tracer(name, task, loader=None, hostname=None, store_errors=True,
                         task_before_start(uuid, args, kwargs)
 
                     R = retval = fun(*args, **kwargs)
+                    # Handle async task functions - if run() returns a coroutine,
+                    # execute it with asyncio.run() for backwards compatibility
+                    if asyncio.iscoroutine(retval):
+                        R = retval = asyncio.run(retval)
                     state = SUCCESS
                 except Reject as exc:
                     I, R = Info(REJECTED, exc), ExceptionInfo(internal=True)
@@ -607,6 +612,258 @@ def build_tracer(name, task, loader=None, hostname=None, store_errors=True,
         return trace_ok_t(R, I, T, Rstr)
 
     return trace_task
+
+
+def build_async_tracer(name, task, loader=None, hostname=None, store_errors=True,
+                       Info=TraceInfo, eager=False, propagate=False, app=None,
+                       monotonic=time.monotonic, trace_ok_t=trace_ok_t,
+                       IGNORE_STATES=IGNORE_STATES):
+    """Return an async function that traces task execution.
+
+    This is the async version of build_tracer for use with aapply().
+    It always uses task.arun() which either:
+    - Runs the user's async implementation if they override arun()
+    - Wraps run() with sync_to_async if arun() is not overridden
+
+    See build_tracer for full documentation.
+    """
+    loader = loader or app.loader
+    ignore_result = task.ignore_result
+    track_started = task.track_started
+    track_started = not eager and (task.track_started and not ignore_result)
+
+    if eager and not ignore_result and task.store_eager_result:
+        publish_result = True
+    else:
+        publish_result = not eager and not ignore_result
+
+    deduplicate_successful_tasks = ((app.conf.task_acks_late or task.acks_late)
+                                    and app.conf.worker_deduplicate_successful_tasks
+                                    and app.backend.persistent)
+
+    hostname = hostname or gethostname()
+    inherit_parent_priority = app.conf.task_inherit_parent_priority
+
+    loader_task_init = loader.on_task_init
+    loader_cleanup = loader.on_process_cleanup
+
+    task_before_start = None
+    task_on_success = None
+    task_after_return = None
+    if task_has_custom(task, 'before_start'):
+        task_before_start = task.before_start
+    if task_has_custom(task, 'on_success'):
+        task_on_success = task.on_success
+    if task_has_custom(task, 'after_return'):
+        task_after_return = task.after_return
+
+    pid = os.getpid()
+
+    request_stack = task.request_stack
+    push_request = request_stack.push
+    pop_request = request_stack.pop
+    push_task = _task_stack.push
+    pop_task = _task_stack.pop
+    _does_info = logger.isEnabledFor(logging.INFO)
+    resultrepr_maxsize = task.resultrepr_maxsize
+
+    prerun_receivers = signals.task_prerun.receivers
+    postrun_receivers = signals.task_postrun.receivers
+    success_receivers = signals.task_success.receivers
+
+    from celery import canvas
+    signature = canvas.maybe_signature
+
+    def on_error(request, exc, state=FAILURE, call_errbacks=True):
+        if propagate:
+            raise
+        I = Info(state, exc)
+        R = I.handle_error_state(
+            task, request, eager=eager, call_errbacks=call_errbacks,
+        )
+        return I, R, I.state, I.retval
+
+    async def trace_task_async(uuid, args, kwargs, request=None):
+        """Async version of trace_task."""
+        R = I = T = Rstr = retval = state = None
+        task_request = None
+        time_start = monotonic()
+        try:
+            try:
+                kwargs.items
+            except AttributeError:
+                raise InvalidTaskError(
+                    'Task keyword arguments is not a mapping')
+
+            task_request = Context(request or {}, args=args,
+                                   called_directly=False, kwargs=kwargs)
+
+            redelivered = (task_request.delivery_info
+                           and task_request.delivery_info.get('redelivered', False))
+            if deduplicate_successful_tasks and redelivered:
+                if task_request.id in successful_requests:
+                    return trace_ok_t(R, I, T, Rstr)
+                r = AsyncResult(task_request.id, app=app)
+
+                try:
+                    state = r.state
+                except BackendGetMetaError:
+                    pass
+                else:
+                    if state == SUCCESS:
+                        info(LOG_IGNORED, {
+                            'id': task_request.id,
+                            'name': get_task_name(task_request, name),
+                            'description': 'Task already completed successfully.'
+                        })
+                        return trace_ok_t(R, I, T, Rstr)
+
+            push_task(task)
+            root_id = task_request.root_id or uuid
+            task_priority = task_request.delivery_info.get('priority') if \
+                inherit_parent_priority else None
+            push_request(task_request)
+            try:
+                # -*- PRE -*-
+                if prerun_receivers:
+                    send_prerun(sender=task, task_id=uuid, task=task,
+                                args=args, kwargs=kwargs)
+                loader_task_init(uuid, task)
+                if track_started:
+                    task.backend.store_result(
+                        uuid, {'pid': pid, 'hostname': hostname}, STARTED,
+                        request=task_request,
+                    )
+
+                # -*- TRACE -*-
+                try:
+                    if task_before_start:
+                        task_before_start(uuid, args, kwargs)
+
+                    # Execute the task using arun() which handles both sync and async
+                    # - If user overrides arun(), uses their async implementation
+                    # - If user only defines run(), arun() wraps it with sync_to_async
+                    R = retval = await task.arun(*args, **kwargs)
+                    state = SUCCESS
+                except Reject as exc:
+                    I, R = Info(REJECTED, exc), ExceptionInfo(internal=True)
+                    state, retval = I.state, I.retval
+                    I.handle_reject(task, task_request)
+                    traceback_clear(exc)
+                except Ignore as exc:
+                    I, R = Info(IGNORED, exc), ExceptionInfo(internal=True)
+                    state, retval = I.state, I.retval
+                    I.handle_ignore(task, task_request)
+                    traceback_clear(exc)
+                except Retry as exc:
+                    I, R, state, retval = on_error(
+                        task_request, exc, RETRY, call_errbacks=False)
+                    traceback_clear(exc)
+                except Exception as exc:
+                    I, R, state, retval = on_error(task_request, exc)
+                    traceback_clear(exc)
+                except BaseException:
+                    raise
+                else:
+                    try:
+                        # callback tasks must be applied before the result is
+                        # stored, so that result.children is populated.
+                        callbacks = task.request.callbacks
+                        if callbacks:
+                            if len(task.request.callbacks) > 1:
+                                sigs, groups = [], []
+                                for sig in callbacks:
+                                    sig = signature(sig, app=app)
+                                    if isinstance(sig, group):
+                                        groups.append(sig)
+                                    else:
+                                        sigs.append(sig)
+                                for group_ in groups:
+                                    await group_.aapply_async(
+                                        (retval,),
+                                        parent_id=uuid, root_id=root_id,
+                                        priority=task_priority
+                                    )
+                                if sigs:
+                                    await group(sigs, app=app).aapply_async(
+                                        (retval,),
+                                        parent_id=uuid, root_id=root_id,
+                                        priority=task_priority
+                                    )
+                            else:
+                                await signature(callbacks[0], app=app).aapply_async(
+                                    (retval,), parent_id=uuid, root_id=root_id,
+                                    priority=task_priority
+                                )
+
+                        # execute first task in chain
+                        chain = task_request.chain
+                        if chain:
+                            _chsig = signature(chain.pop(), app=app)
+                            await _chsig.aapply_async(
+                                (retval,), chain=chain,
+                                parent_id=uuid, root_id=root_id,
+                                priority=task_priority
+                            )
+                        task.backend.mark_as_done(
+                            uuid, retval, task_request, publish_result,
+                        )
+                    except EncodeError as exc:
+                        I, R, state, retval = on_error(task_request, exc)
+                        traceback_clear(exc)
+                    else:
+                        Rstr = saferepr(R, resultrepr_maxsize)
+                        T = monotonic() - time_start
+                        if task_on_success:
+                            task_on_success(retval, uuid, args, kwargs)
+                        if success_receivers:
+                            send_success(sender=task, result=retval)
+                        if _does_info:
+                            info(LOG_SUCCESS, {
+                                'id': uuid,
+                                'name': get_task_name(task_request, name),
+                                'return_value': Rstr,
+                                'runtime': T,
+                                'args': task_request.get('argsrepr') or safe_repr(args),
+                                'kwargs': task_request.get('kwargsrepr') or safe_repr(kwargs),
+                            })
+
+                # -* POST *-
+                if state not in IGNORE_STATES:
+                    if task_after_return:
+                        task_after_return(
+                            state, retval, uuid, args, kwargs, None,
+                        )
+            finally:
+                try:
+                    if postrun_receivers:
+                        send_postrun(sender=task, task_id=uuid, task=task,
+                                     args=args, kwargs=kwargs,
+                                     retval=retval, state=state)
+                finally:
+                    pop_task()
+                    pop_request()
+                    if not eager:
+                        try:
+                            task.backend.process_cleanup()
+                            loader_cleanup()
+                        except (KeyboardInterrupt, SystemExit, MemoryError):
+                            raise
+                        except Exception as exc:
+                            logger.error('Process cleanup failed: %r', exc,
+                                         exc_info=True)
+        except MemoryError:
+            raise
+        except Exception as exc:
+            _signal_internal_error(task, uuid, args, kwargs, request, exc)
+            if eager:
+                raise
+            R = report_internal_error(task, exc)
+            if task_request is not None:
+                I, _, _, _ = on_error(task_request, exc)
+        return trace_ok_t(R, I, T, Rstr)
+
+    return trace_task_async
 
 
 def trace_task(task, uuid, args, kwargs, request=None, **opts):

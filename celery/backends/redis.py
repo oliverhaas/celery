@@ -1,4 +1,5 @@
 """Redis result store backend."""
+import asyncio
 import time
 from contextlib import contextmanager
 from functools import partial
@@ -30,6 +31,11 @@ try:
 except ImportError:
     redis = None
     get_redis_error_classes = None
+
+try:
+    import redis.asyncio as aioredis
+except ImportError:
+    aioredis = None
 
 try:
     import redis.sentinel
@@ -619,6 +625,231 @@ class RedisBackend(BaseKeyValueStoreBackend, AsyncBackendMixin):
     @cached_property
     def client(self):
         return self._create_client(**self.connparams)
+
+    # --- Async client and methods ---
+
+    def _get_async_client_class(self):
+        if aioredis is None:
+            raise ImproperlyConfigured(
+                'redis.asyncio is required for native async support. '
+                'Install redis>=4.2.0 or use sync_to_async wrappers.'
+            )
+        return aioredis.Redis
+
+    def _get_async_connection_pool_class(self):
+        if aioredis is None:
+            raise ImproperlyConfigured(
+                'redis.asyncio is required for native async support.'
+            )
+        return aioredis.ConnectionPool
+
+    def _create_async_client(self, **params):
+        # Filter out params not supported by async client
+        async_params = params.copy()
+        # The async client uses the same connection pool parameters
+        pool = self._get_async_connection_pool_class()(**async_params)
+        return self._get_async_client_class()(connection_pool=pool)
+
+    @cached_property
+    def async_client(self):
+        """Return an async Redis client for native asyncio operations."""
+        return self._create_async_client(**self.connparams)
+
+    async def aget(self, key):
+        """Async version of get."""
+        return await self.async_client.get(key)
+
+    async def amget(self, keys):
+        """Async version of mget."""
+        return await self.async_client.mget(keys)
+
+    async def aset(self, key, value, **retry_policy):
+        """Async version of set."""
+        if isinstance(value, str) and len(value) > self._MAX_STR_VALUE_SIZE:
+            raise BackendStoreError('value too large for Redis backend')
+        # For async, we don't use retry_over_time - caller should handle retries
+        await self._aset(key, value)
+
+    async def _aset(self, key, value):
+        """Async version of _set - set value and publish."""
+        async with self.async_client.pipeline() as pipe:
+            if self.expires:
+                pipe.setex(key, self.expires, value)
+            else:
+                pipe.set(key, value)
+            pipe.publish(key, value)
+            await pipe.execute()
+
+    async def adelete(self, key):
+        """Async version of delete."""
+        await self.async_client.delete(key)
+
+    async def aincr(self, key):
+        """Async version of incr."""
+        return await self.async_client.incr(key)
+
+    async def aexpire(self, key, value):
+        """Async version of expire."""
+        return await self.async_client.expire(key, value)
+
+    async def aget_task_meta(self, task_id, cache=True):
+        """Async version of get_task_meta."""
+        self._ensure_not_eager()
+        if cache:
+            try:
+                return self._cache[task_id]
+            except KeyError:
+                pass
+        meta = await self._aget_task_meta_for(task_id)
+        if cache and meta.get('status') == states.SUCCESS:
+            self._cache[task_id] = meta
+        return meta
+
+    async def _aget_task_meta_for(self, task_id):
+        """Async version of _get_task_meta_for."""
+        meta = await self.aget(self.get_key_for_task(task_id))
+        if not meta:
+            return {'status': states.PENDING, 'result': None}
+        return self.decode_result(meta)
+
+    async def await_for_pending(self, result, timeout=None, interval=0.5,
+                                 no_ack=True, on_message=None, on_interval=None,
+                                 callback=None, propagate=True):
+        """Async version of wait_for_pending - wait for task result."""
+        self._ensure_not_eager()
+        meta = await self.await_for(
+            result.id, timeout=timeout,
+            interval=interval,
+            on_interval=on_interval,
+            no_ack=no_ack,
+        )
+        if meta:
+            result._maybe_set_cache(meta)
+            return result.maybe_throw(propagate=propagate, callback=callback)
+
+    async def await_for(self, task_id, timeout=None, interval=0.5,
+                        no_ack=True, on_interval=None):
+        """Async version of wait_for - poll for task result."""
+        self._ensure_not_eager()
+        time_elapsed = 0.0
+
+        while True:
+            meta = await self.aget_task_meta(task_id)
+            if meta['status'] in states.READY_STATES:
+                return meta
+            if on_interval:
+                on_interval()
+            await asyncio.sleep(interval)
+            time_elapsed += interval
+            if timeout and time_elapsed >= timeout:
+                from celery.exceptions import TimeoutError
+                raise TimeoutError('The operation timed out.')
+
+    async def aforget(self, task_id):
+        """Async version of forget."""
+        self._cache.pop(task_id, None)
+        key = self.get_key_for_task(task_id)
+        await self.adelete(key)
+        self.result_consumer.cancel_for(task_id)
+
+    async def asave_group(self, group_id, result):
+        """Async version of save_group."""
+        return await self.aset(
+            self.get_key_for_group(group_id),
+            self.encode_group(result),
+        )
+
+    async def adelete_group(self, group_id):
+        """Async version of delete_group."""
+        await self.adelete(self.get_key_for_group(group_id))
+
+    async def arestore_group(self, group_id, cache=True):
+        """Async version of restore_group."""
+        if cache:
+            try:
+                return self._cache[group_id]
+            except KeyError:
+                pass
+        meta = await self.aget(self.get_key_for_group(group_id))
+        if meta:
+            meta = self.decode_group(meta)
+            if cache:
+                self._cache[group_id] = meta
+            return meta
+
+    async def aget_many(self, task_ids, timeout=None, interval=0.5, no_ack=True,
+                        on_message=None, on_interval=None, max_iterations=None,
+                        READY_STATES=states.READY_STATES):
+        """Async version of get_many - fetch multiple task results."""
+        interval = 0.5 if interval is None else interval
+        ids = task_ids if isinstance(task_ids, set) else set(task_ids)
+        cached_ids = set()
+        cache = self._cache
+        results = []
+
+        # First yield cached results
+        for task_id in ids:
+            try:
+                cached = cache[task_id]
+            except KeyError:
+                pass
+            else:
+                if cached['status'] in READY_STATES:
+                    results.append((bytes_to_str(task_id), cached))
+                    cached_ids.add(task_id)
+
+        ids.difference_update(cached_ids)
+        iterations = 0
+
+        while ids:
+            keys = list(ids)
+            # Use async mget
+            values = await self.amget([self.get_key_for_task(k) for k in keys])
+            r = self._mget_to_results(values, keys, READY_STATES)
+            cache.update(r)
+            ids.difference_update({bytes_to_str(v) for v in r})
+            for key, value in r.items():
+                if on_message is not None:
+                    on_message(value)
+                results.append((bytes_to_str(key), value))
+            if timeout and iterations * interval >= timeout:
+                from celery.exceptions import TimeoutError
+                raise TimeoutError(f'Operation timed out ({timeout})')
+            if on_interval:
+                on_interval()
+            await asyncio.sleep(interval)
+            iterations += 1
+            if max_iterations and iterations >= max_iterations:
+                break
+
+        return results
+
+    async def aiter_native(self, result, timeout=None, interval=0.5, no_ack=True,
+                           on_message=None, on_interval=None):
+        """Async version of iter_native - iterate over task results."""
+        self._ensure_not_eager()
+        results = result.results
+        if not results:
+            return []
+
+        all_results = []
+        task_ids = set()
+        for res in results:
+            # Check if it's a ResultSet (has .results attribute)
+            if hasattr(res, 'results') and hasattr(res, 'id'):
+                all_results.append((res.id, res.results))
+            else:
+                task_ids.add(res.id)
+
+        if task_ids:
+            many_results = await self.aget_many(
+                task_ids,
+                timeout=timeout, interval=interval, no_ack=no_ack,
+                on_message=on_message, on_interval=on_interval,
+            )
+            all_results.extend(many_results)
+
+        return all_results
 
     def __reduce__(self, args=(), kwargs=None):
         kwargs = {} if not kwargs else kwargs
