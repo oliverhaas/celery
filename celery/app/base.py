@@ -8,26 +8,46 @@ import threading
 import typing
 import warnings
 from collections import UserDict, defaultdict, deque
-
-from asgiref.sync import sync_to_async
 from datetime import datetime
 from datetime import timezone as datetime_timezone
 from operator import attrgetter
 
+from asgiref.sync import async_to_sync
 from click.exceptions import Exit
 from dateutil.parser import isoparse
-from kombu import Exchange, pools
+from kombu import Exchange
 from kombu.clocks import LamportClock
 from kombu.common import oid_from
-from kombu.transport.native_delayed_delivery import calculate_routing_key
 from kombu.utils.compat import register_after_fork
+
+
+# Note: native_delayed_delivery is not yet available in kombu-asyncio
+# This is a RabbitMQ-specific feature for quorum queues
+def calculate_routing_key(countdown, routing_key):
+    """Stub for native delayed delivery routing key calculation.
+
+    This feature is not yet implemented in kombu-asyncio.
+    """
+    raise NotImplementedError(
+        "native_delayed_delivery is not available in kombu-asyncio. "
+        "Use standard countdown/eta instead."
+    )
 from kombu.utils.objects import cached_property
 from kombu.utils.uuid import uuid
 from vine import starpromise
 
 from celery import platforms, signals
-from celery._state import (_announce_app_finalized, _deregister_app, _register_app, _set_current_app, _task_stack,
-                           connect_on_app_finalize, get_current_app, get_current_worker_task, set_default_app)
+from celery._state import (
+    _announce_app_finalized,
+    _deregister_app,
+    _register_app,
+    _set_current_app,
+    _task_stack,
+    connect_on_app_finalize,
+    get_current_app,
+    get_current_worker_task,
+    set_default_app,
+)
 from celery.exceptions import AlwaysEagerIgnored, ImproperlyConfigured
 from celery.loaders import get_loader_cls
 from celery.local import PromiseProxy, maybe_evaluate
@@ -42,27 +62,37 @@ from celery.utils.time import maybe_make_aware, timezone, to_utc
 
 from ..utils.annotations import annotation_is_class, annotation_issubclass, get_optional_arg
 from ..utils.quorum_queues import detect_quorum_queues
+
 # Load all builtin tasks
 from . import backends, builtins  # noqa
 from .annotations import prepare as prepare_annotations
 from .autoretry import add_autoretry_behaviour
 from .defaults import DEFAULT_SECURITY_DIGEST, find_deprecated_settings
 from .registry import TaskRegistry
-from .utils import (AppPickler, Settings, _new_key_to_old, _old_key_to_new, _unpickle_app, _unpickle_app_v2, appstr,
-                    bugreport, detect_settings)
+from .utils import (
+    AppPickler,
+    Settings,
+    _new_key_to_old,
+    _old_key_to_new,
+    _unpickle_app,
+    _unpickle_app_v2,
+    appstr,
+    bugreport,
+    detect_settings,
+)
 
 if typing.TYPE_CHECKING:  # pragma: no cover  # codecov does not capture this
     # flake8 marks the BaseModel import as unused, because the actual typehint is quoted.
-    from pydantic import BaseModel  # noqa: F401
+    from pydantic import BaseModel
 
-__all__ = ('Celery',)
+__all__ = ("Celery",)
 
 logger = get_logger(__name__)
 
 BUILTIN_FIXUPS = {
-    'celery.fixups.django:fixup',
+    "celery.fixups.django:fixup",
 }
-USING_EXECV = os.environ.get('FORKED_BY_MULTIPROCESSING')
+USING_EXECV = os.environ.get("FORKED_BY_MULTIPROCESSING")
 
 ERR_ENVVAR_NOT_SET = """
 The environment variable {0!r} is not set,
@@ -101,7 +131,7 @@ def _after_fork_cleanup_app(app):
     try:
         app._after_fork()
     except Exception as exc:  # pylint: disable=broad-except
-        logger.info('after forker raised exception: %r', exc, exc_info=1)
+        logger.info("after forker raised exception: %r", exc, exc_info=1)
 
 
 def pydantic_wrapper(
@@ -109,22 +139,22 @@ def pydantic_wrapper(
     task_fun: typing.Callable[..., typing.Any],
     task_name: str,
     strict: bool = True,
-    context: typing.Optional[typing.Dict[str, typing.Any]] = None,
-    dump_kwargs: typing.Optional[typing.Dict[str, typing.Any]] = None
+    context: dict[str, typing.Any] | None = None,
+    dump_kwargs: dict[str, typing.Any] | None = None
 ):
     """Wrapper to validate arguments and serialize return values using Pydantic."""
     try:
-        pydantic = importlib.import_module('pydantic')
+        pydantic = importlib.import_module("pydantic")
     except ModuleNotFoundError as ex:
-        raise ImproperlyConfigured('You need to install pydantic to use pydantic model serialization.') from ex
+        raise ImproperlyConfigured("You need to install pydantic to use pydantic model serialization.") from ex
 
-    BaseModel: typing.Type['BaseModel'] = pydantic.BaseModel  # noqa: F811  # only defined when type checking
+    BaseModel: type[BaseModel] = pydantic.BaseModel  # only defined when type checking
 
     if context is None:
         context = {}
     if dump_kwargs is None:
         dump_kwargs = {}
-    dump_kwargs.setdefault('mode', 'json')
+    dump_kwargs.setdefault("mode", "json")
 
     # If a file uses `from __future__ import annotations`, all annotations will
     # be strings. `typing.get_type_hints()` can turn these back into real
@@ -156,7 +186,7 @@ def pydantic_wrapper(
                 bound_args.arguments[arg_name] = arg_annotation.model_validate(
                     arg_value,
                     strict=strict,
-                    context={**context, 'celery_app': app, 'celery_task_name': task_name},
+                    context={**context, "celery_app": app, "celery_task_name": task_name},
                 )
 
         # Call the task with (potentially) converted arguments
@@ -164,8 +194,8 @@ def pydantic_wrapper(
 
         # Dump Pydantic model if the returned value is an instance of pydantic.BaseModel *and* its
         # class matches the typehint
-        if type_hints and 'return' in type_hints:
-            return_annotation = type_hints['return']
+        if type_hints and "return" in type_hints:
+            return_annotation = type_hints["return"]
         else:
             return_annotation = task_signature.return_annotation
 
@@ -197,8 +227,8 @@ class PendingConfiguration(UserDict, AttributeDictMixin):
     _data = None
 
     def __init__(self, conf, callback):
-        object.__setattr__(self, '_data', conf)
-        object.__setattr__(self, 'callback', callback)
+        object.__setattr__(self, "_data", conf)
+        object.__setattr__(self, "callback", callback)
 
     def __setitem__(self, key, value):
         self._data[key] = value
@@ -288,14 +318,14 @@ class Celery:
 
     builtin_fixups = BUILTIN_FIXUPS
 
-    amqp_cls = 'celery.app.amqp:AMQP'
+    amqp_cls = "celery.app.amqp:AMQP"
     backend_cls = None
-    events_cls = 'celery.app.events:Events'
+    events_cls = "celery.app.events:Events"
     loader_cls = None
-    log_cls = 'celery.app.log:Logging'
-    control_cls = 'celery.app.control:Control'
-    task_cls = 'celery.app.task:Task'
-    registry_cls = 'celery.app.registry:TaskRegistry'
+    log_cls = "celery.app.log:Logging"
+    control_cls = "celery.app.control:Control"
+    task_cls = "celery.app.task:Task"
+    registry_cls = "celery.app.registry:TaskRegistry"
 
     #: Thread local storage.
     _local = None
@@ -325,6 +355,8 @@ class Celery:
 
         self._local = threading.local()
         self._backend_cache = None
+        self._pool = None
+        self._async_connection = None
 
         self.clock = LamportClock()
         self.main = main
@@ -337,7 +369,7 @@ class Celery:
             # Custom task class provided as argument
             bool(task_cls)
             # subclass of Celery with a task_cls attribute
-            or self.__class__ is not Celery and hasattr(self.__class__, 'task_cls')
+            or (self.__class__ is not Celery and hasattr(self.__class__, "task_cls"))
         )
         self.task_cls = task_cls or self.task_cls
         self.set_as_current = set_as_current
@@ -363,15 +395,15 @@ class Celery:
         # If the class defines a custom __reduce_args__ we need to use
         # the old way of pickling apps: pickling a list of
         # args instead of the new way that pickles a dict of keywords.
-        self._using_v1_reduce = app_has_custom(self, '__reduce_args__')
+        self._using_v1_reduce = app_has_custom(self, "__reduce_args__")
 
         # these options are moved to the config to
         # simplify pickling of the app object.
         self._preconf = changes or {}
         self._preconf_set_by_auto = set()
-        self.__autoset('broker_url', broker)
-        self.__autoset('result_backend', backend)
-        self.__autoset('include', include)
+        self.__autoset("broker_url", broker)
+        self.__autoset("result_backend", backend)
+        self.__autoset("include", include)
 
         for key, value in kwargs.items():
             self.__autoset(key, value)
@@ -394,13 +426,13 @@ class Celery:
         # Signals
         if self.on_configure is None:
             # used to be a method pre 4.0
-            self.on_configure = Signal(name='app.on_configure')
+            self.on_configure = Signal(name="app.on_configure")
         self.on_after_configure = Signal(
-            name='app.on_after_configure',
-            providing_args={'source'},
+            name="app.on_after_configure",
+            providing_args={"source"},
         )
-        self.on_after_finalize = Signal(name='app.on_after_finalize')
-        self.on_after_fork = Signal(name='app.on_after_fork')
+        self.on_after_finalize = Signal(name="app.on_after_finalize")
+        self.on_after_fork = Signal(name="app.on_after_fork")
 
         # Boolean signalling, whether fast_trace_task are enabled.
         # this attribute is set in celery.worker.trace and checked by celery.worker.request
@@ -412,9 +444,9 @@ class Celery:
     def _get_default_loader(self):
         # the --loader command-line argument sets the environment variable.
         return (
-            os.environ.get('CELERY_LOADER') or
+            os.environ.get("CELERY_LOADER") or
             self.loader_cls or
-            'celery.loaders.app:AppLoader'
+            "celery.loaders.app:AppLoader"
         )
 
     def on_init(self):
@@ -451,6 +483,7 @@ class Celery:
             ...         pass
         """
         self._pool = None
+        self._async_connection = None
         _deregister_app(self)
 
     def start(self, argv=None):
@@ -480,7 +513,7 @@ class Celery:
         if argv is None:
             argv = sys.argv
 
-        if 'worker' not in argv:
+        if "worker" not in argv:
             raise ValueError(
                 "The worker sub-command must be specified in argv.\n"
                 "Use app.start() to programmatically start other commands."
@@ -518,7 +551,7 @@ class Celery:
             not access any attributes on the returned object until the
             application is fully set up (finalized).
         """
-        if USING_EXECV and opts.get('lazy', True):
+        if USING_EXECV and opts.get("lazy", True):
             # When using execv the task in the original module will point to a
             # different app, so doing things like 'add.request' will point to
             # a different task instance.  This makes sure it will always use
@@ -553,11 +586,10 @@ class Celery:
         if len(args) == 1:
             if callable(args[0]):
                 return inner_create_task_cls(**opts)(*args)
-            raise TypeError('argument 1 to @task() must be a callable')
+            raise TypeError("argument 1 to @task() must be a callable")
         if args:
             raise TypeError(
-                '@task() takes exactly 1 argument ({} given)'.format(
-                    sum([len(args), len(opts)])))
+                f"@task() takes exactly 1 argument ({sum([len(args), len(opts)])} given)")
         return inner_create_task_cls(**opts)
 
     def type_checker(self, fun, bound=False):
@@ -571,12 +603,12 @@ class Celery:
         bind=False,
         pydantic: bool = False,
         pydantic_strict: bool = False,
-        pydantic_context: typing.Optional[typing.Dict[str, typing.Any]] = None,
-        pydantic_dump_kwargs: typing.Optional[typing.Dict[str, typing.Any]] = None,
+        pydantic_context: dict[str, typing.Any] | None = None,
+        pydantic_dump_kwargs: dict[str, typing.Any] | None = None,
         **options,
     ):
         if not self.finalized and not self.autofinalize:
-            raise RuntimeError('Contract breach: app not finalized')
+            raise RuntimeError("Contract breach: app not finalized")
         name = name or self.gen_task_name(fun.__name__, fun.__module__)
         base = base or self.Task
 
@@ -586,15 +618,15 @@ class Celery:
 
             run = fun if bind else staticmethod(fun)
             task = type(fun.__name__, (base,), dict({
-                'app': self,
-                'name': name,
-                'run': run,
-                '_decorated': True,
-                '__doc__': fun.__doc__,
-                '__module__': fun.__module__,
-                '__annotations__': fun.__annotations__,
-                '__header__': self.type_checker(fun, bound=bind),
-                '__wrapped__': run}, **options))()
+                "app": self,
+                "name": name,
+                "run": run,
+                "_decorated": True,
+                "__doc__": fun.__doc__,
+                "__module__": fun.__module__,
+                "__annotations__": fun.__annotations__,
+                "__header__": self.type_checker(fun, bound=bind),
+                "__wrapped__": run}, **options))()
             # for some reason __qualname__ cannot be set in type()
             # so we have to set it here.
             try:
@@ -616,7 +648,7 @@ class Celery:
             style task classes, you should not need to use this for
             new projects.
         """
-        task = inspect.isclass(task) and task() or task
+        task = (inspect.isclass(task) and task()) or task
         if not task.name:
             task_cls = type(task)
             task.name = self.gen_task_name(
@@ -639,7 +671,7 @@ class Celery:
         with self._finalize_mutex:
             if not self.finalized:
                 if auto and not self.autofinalize:
-                    raise RuntimeError('Contract breach: app not finalized')
+                    raise RuntimeError("Contract breach: app not finalized")
                 self.finalized = True
                 _announce_app_finalized(self)
 
@@ -718,14 +750,14 @@ class Celery:
                 ERR_ENVVAR_NOT_SET.strip().format(variable_name))
         return self.config_from_object(module_name, silent=silent, force=force)
 
-    def config_from_cmdline(self, argv, namespace='celery'):
+    def config_from_cmdline(self, argv, namespace="celery"):
         self._conf.update(
             self.loader.cmdline_config_parser(argv, namespace)
         )
 
     def setup_security(self, allowed_serializers=None, key=None, key_password=None, cert=None,
                        store=None, digest=DEFAULT_SECURITY_DIGEST,
-                       serializer='json'):
+                       serializer="json"):
         """Setup the message-signing serializer.
 
         This will affect all application instances (a global operation).
@@ -756,7 +788,7 @@ class Celery:
                               store, digest, serializer, app=self)
 
     def autodiscover_tasks(self, packages=None,
-                           related_name='tasks', force=False):
+                           related_name="tasks", force=False):
         """Auto-discover task modules.
 
         Searches a list of packages for a "tasks.py" module (or use
@@ -815,7 +847,7 @@ class Celery:
     def _autodiscover_tasks_from_fixups(self, related_name):
         return self._autodiscover_tasks_from_names([
             pkg for fixup in self._fixups
-            if hasattr(fixup, 'autodiscover_tasks')
+            if hasattr(fixup, "autodiscover_tasks")
             for pkg in fixup.autodiscover_tasks()
         ], related_name=related_name)
 
@@ -845,14 +877,15 @@ class Celery:
         conf = self.conf
         if conf.task_always_eager:  # pragma: no cover
             warnings.warn(AlwaysEagerIgnored(
-                'task_always_eager has no effect on send_task',
+                "task_always_eager has no effect on send_task",
             ), stacklevel=2)
 
-        ignore_result = options.pop('ignore_result', False)
+        ignore_result = options.pop("ignore_result", False)
         options = router.route(
             options, route_name or name, args, kwargs, task_type)
 
-        driver_type = self.producer_pool.connections.connection.transport.driver_type
+        # Get driver type from the async connection
+        driver_type = self.async_connection.transport.driver_type
 
         if (eta or countdown) and detect_quorum_queues(self, driver_type)[0]:
 
@@ -861,7 +894,7 @@ class Celery:
             routing_key = queue.routing_key if queue else options["routing_key"]
             exchange_name = queue.exchange.name if queue else options["exchange"]
 
-            if exchange_type != 'direct':
+            if exchange_type != "direct":
                 if eta:
                     if isinstance(eta, str):
                         eta = isoparse(eta)
@@ -871,19 +904,19 @@ class Celery:
                     if countdown > 0:
                         routing_key = calculate_routing_key(int(countdown), routing_key)
                         exchange = Exchange(
-                            'celery_delayed_27',
-                            type='topic',
+                            "celery_delayed_27",
+                            type="topic",
                         )
                         options.pop("queue", None)
-                        options['routing_key'] = routing_key
-                        options['exchange'] = exchange
+                        options["routing_key"] = routing_key
+                        options["exchange"] = exchange
 
             else:
                 logger.warning(
-                    'Direct exchanges are not supported with native delayed delivery.\n'
-                    f'{exchange_name} is a direct exchange but should be a topic exchange or '
-                    'a fanout exchange in order for native delayed delivery to work properly.\n'
-                    'If quorum queues are used, this task may block the worker process until the ETA arrives.'
+                    "Direct exchanges are not supported with native delayed delivery.\n"
+                    f"{exchange_name} is a direct exchange but should be a topic exchange or "
+                    "a fanout exchange in order for native delayed delivery to work properly.\n"
+                    "If quorum queues are used, this task may block the worker process until the ETA arrives."
                 )
 
         if expires is not None:
@@ -902,9 +935,9 @@ class Celery:
                     "We assume this is intended and so we have set the "
                     "expiration date to 0 instead.\n"
                     "According to RabbitMQ's documentation:\n"
-                    "\"Setting the TTL to 0 causes messages to be expired upon "
+                    '"Setting the TTL to 0 causes messages to be expired upon '
                     "reaching a queue unless they can be delivered to a "
-                    "consumer immediately.\"\n"
+                    'consumer immediately."\n'
                     "If this was unintended, please check the code which "
                     "published this task."
                 )
@@ -921,8 +954,8 @@ class Celery:
                     parent_id = parent.request.id
 
                 if conf.task_inherit_parent_priority:
-                    options.setdefault('priority',
-                                       parent.request.delivery_info.get('priority'))
+                    options.setdefault("priority",
+                                       parent.request.delivery_info.get("priority"))
 
         # alias for 'task_as_v2'
         message = amqp.create_task_message(
@@ -936,7 +969,7 @@ class Celery:
             replaced_task_nesting=replaced_task_nesting, **options
         )
 
-        stamped_headers = options.pop('stamped_headers', [])
+        stamped_headers = options.pop("stamped_headers", [])
         for stamp in stamped_headers:
             options.pop(stamp)
 
@@ -945,26 +978,52 @@ class Celery:
 
         return message, options, task_id, ignore_result, producer, result_cls, add_to_parent
 
-    def _send_task_message(self, producer, name, message, task_id, ignore_result, **options):
-        """Send the prepared task message to the broker.
+    async def _asend_task_message(self, name, message, task_id, ignore_result, connection=None, **options):
+        """Send the prepared task message to the broker using native asyncio.
 
-        This method performs the actual I/O operations: acquiring a producer
-        connection and publishing the message.
+        This is the native async implementation that uses kombu-asyncio's
+        async Producer.publish() directly.
 
         Arguments:
-            producer: Optional producer to use (or None to acquire from pool).
+            name: Task name.
+            message: Prepared message from _prepare_task_message.
+            task_id: Task ID.
+            ignore_result: Whether to ignore the result.
+            connection: Optional connection to use.
+            **options: Additional options for asend_task_message.
+        """
+        amqp = self.amqp
+
+        # Get or create async connection
+        if connection is None:
+            connection = self.connection_for_write()
+
+        # Connect if needed
+        await connection.connect()
+
+        # Create async producer
+        async with connection.Producer() as producer:
+            if not ignore_result:
+                self.backend.on_task_call(producer, task_id)
+            await amqp.asend_task_message(producer, name, message, **options)
+
+    def _send_task_message(self, producer, name, message, task_id, ignore_result, **options):
+        """Send the prepared task message to the broker (sync wrapper).
+
+        This wraps the async implementation with async_to_sync for
+        backward compatibility with sync code.
+
+        Arguments:
+            producer: Optional producer to use (ignored in async impl, kept for compat).
             name: Task name.
             message: Prepared message from _prepare_task_message.
             task_id: Task ID.
             ignore_result: Whether to ignore the result.
             **options: Additional options for send_task_message.
         """
-        amqp = self.amqp
-        with self.producer_or_acquire(producer) as P:
-            with P.connection._reraise_as_library_errors():
-                if not ignore_result:
-                    self.backend.on_task_call(P, task_id)
-                amqp.send_task_message(P, name, message, **options)
+        async_to_sync(self._asend_task_message)(
+            name, message, task_id, ignore_result, **options
+        )
 
     def send_task(self, name, args=None, kwargs=None, countdown=None,
                   eta=None, task_id=None, producer=None, connection=None,
@@ -1022,13 +1081,10 @@ class Celery:
                          shadow=None, chain=None, task_type=None, replaced_task_nesting=0, **options):
         """Async version of :meth:`send_task`.
 
-        Send task by name.
+        Send task by name using native asyncio.
 
         This method shares message preparation logic with :meth:`send_task`,
-        only wrapping the actual I/O operations (broker communication) with
-        sync_to_async. This is a step toward native asyncio support - the
-        sync_to_async wrapper can be replaced with native async broker
-        operations once kombu supports asyncio.
+        but uses native kombu-asyncio async methods for I/O operations.
 
         Arguments and return value are the same as :meth:`send_task`.
         """
@@ -1047,9 +1103,9 @@ class Celery:
                 replaced_task_nesting=replaced_task_nesting, **options
             )
 
-        # Send message (I/O) - wrapped with sync_to_async
-        await sync_to_async(self._send_task_message, thread_sensitive=False)(
-            producer, name, message, task_id, ignore_result, **options
+        # Send message (I/O) - native async
+        await self._asend_task_message(
+            name, message, task_id, ignore_result, connection=connection, **options
         )
 
         # Build result (no I/O) - runs synchronously
@@ -1126,26 +1182,19 @@ class Celery:
                     connect_timeout=None, transport=None,
                     transport_options=None, heartbeat=None,
                     login_method=None, failover_strategy=None, **kwargs):
+        """Create a connection to the broker.
+
+        In kombu-asyncio, most parameters are embedded in the URL.
+        Only hostname (URL) and transport_options are used.
+        """
         conf = self.conf
+        # Merge transport options
+        merged_transport_options = dict(
+            conf.broker_transport_options or {}, **(transport_options or {})
+        )
         return self.amqp.Connection(
-            url,
-            userid or conf.broker_user,
-            password or conf.broker_password,
-            virtual_host or conf.broker_vhost,
-            port or conf.broker_port,
-            transport=transport or conf.broker_transport,
-            ssl=self.either('broker_use_ssl', ssl),
-            heartbeat=heartbeat,
-            login_method=login_method or conf.broker_login_method,
-            failover_strategy=(
-                failover_strategy or conf.broker_failover_strategy
-            ),
-            transport_options=dict(
-                conf.broker_transport_options, **transport_options or {}
-            ),
-            connect_timeout=self.either(
-                'broker_connection_timeout', connect_timeout
-            ),
+            hostname=url,
+            transport_options=merged_transport_options,
         )
 
     broker_connection = connection
@@ -1171,17 +1220,17 @@ class Celery:
     default_connection = connection_or_acquire  # XXX compat
 
     def producer_or_acquire(self, producer=None):
-        """Context used to acquire a producer from the pool.
+        """Legacy method for sync producer pool acquisition.
 
-        For use within a :keyword:`with` statement to get a producer
-        from the pool if one is not already provided
+        In celery-asyncio, this is not used. All producer operations
+        go through the async path which creates producers directly.
 
-        Arguments:
-            producer (kombu.Producer): If not provided, a producer
-                will be acquired from the producer pool.
+        This method exists for backward compatibility but will raise
+        NotImplementedError to help identify code paths that need updating.
         """
-        return FallbackContext(
-            producer, self.producer_pool.acquire, block=True,
+        raise NotImplementedError(
+            "producer_or_acquire is not available in celery-asyncio. "
+            "Use async methods like asend_task() instead."
         )
 
     default_producer = producer_or_acquire  # XXX compat
@@ -1277,15 +1326,12 @@ class Celery:
 
     def _after_fork(self):
         self._pool = None
-        try:
-            self.__dict__['amqp']._producer_pool = None
-        except (AttributeError, KeyError):
-            pass
+        self._async_connection = None
         self.on_after_fork.send(sender=self)
 
     def signature(self, *args, **kwargs):
         """Return a new :class:`~celery.Signature` bound to this app."""
-        kwargs['app'] = self
+        kwargs["app"] = self
         return self._canvas.signature(*args, **kwargs)
 
     def add_periodic_task(self, schedule, sig,
@@ -1312,11 +1358,11 @@ class Celery:
                if isinstance(sig, abstract.CallableSignature)
                else self.signature(sig.name, args, kwargs))
         return name or repr(sig), {
-            'schedule': schedule,
-            'task': sig.name,
-            'args': sig.args,
-            'kwargs': sig.kwargs,
-            'options': dict(sig.options, **opts),
+            "schedule": schedule,
+            "task": sig.name,
+            "args": sig.args,
+            "kwargs": sig.kwargs,
+            "options": dict(sig.options, **opts),
         }
 
     def _add_periodic_task(self, key, entry, name=None):
@@ -1331,11 +1377,11 @@ class Celery:
     def create_task_cls(self):
         """Create a base task class bound to this app."""
         return self.subclass_with_self(
-            self.task_cls, name='Task', attribute='_app',
+            self.task_cls, name="Task", attribute="_app",
             keep_reduce=True, abstract=True,
         )
 
-    def subclass_with_self(self, Class, name=None, attribute='app',
+    def subclass_with_self(self, Class, name=None, attribute="app",
                            reverse=None, keep_reduce=False, **kw):
         """Subclass an app-compatible class.
 
@@ -1366,7 +1412,7 @@ class Celery:
             __doc__=Class.__doc__,
             **kw)
         if not keep_reduce:
-            attrs['__reduce__'] = __reduce__
+            attrs["__reduce__"] = __reduce__
 
         return type(name or Class.__name__, (Class,), attrs)
 
@@ -1380,7 +1426,7 @@ class Celery:
         self.close()
 
     def __repr__(self):
-        return f'<{type(self).__name__} {appstr(self)}>'
+        return f"<{type(self).__name__} {appstr(self)}>"
 
     def __reduce__(self):
         if self._using_v1_reduce:
@@ -1399,19 +1445,19 @@ class Celery:
     def __reduce_keys__(self):
         """Keyword arguments used to reconstruct the object when unpickling."""
         return {
-            'main': self.main,
-            'changes':
+            "main": self.main,
+            "changes":
                 self._conf.changes if self.configured else self._preconf,
-            'loader': self.loader_cls,
-            'backend': self.backend_cls,
-            'amqp': self.amqp_cls,
-            'events': self.events_cls,
-            'log': self.log_cls,
-            'control': self.control_cls,
-            'fixups': self.fixups,
-            'config_source': self._config_source,
-            'task_cls': self.task_cls,
-            'namespace': self.namespace,
+            "loader": self.loader_cls,
+            "backend": self.backend_cls,
+            "amqp": self.amqp_cls,
+            "events": self.events_cls,
+            "log": self.log_cls,
+            "control": self.control_cls,
+            "fixups": self.fixups,
+            "config_source": self._config_source,
+            "task_cls": self.task_cls,
+            "namespace": self.namespace,
         }
 
     def __reduce_args__(self):
@@ -1428,7 +1474,7 @@ class Celery:
         See Also:
             :class:`~@Worker`.
         """
-        return self.subclass_with_self('celery.apps.worker:Worker')
+        return self.subclass_with_self("celery.apps.worker:Worker")
 
     @cached_property
     def WorkController(self, **kwargs):
@@ -1437,7 +1483,7 @@ class Celery:
         See Also:
             :class:`~@WorkController`.
         """
-        return self.subclass_with_self('celery.worker:WorkController')
+        return self.subclass_with_self("celery.worker:WorkController")
 
     @cached_property
     def Beat(self, **kwargs):
@@ -1446,7 +1492,7 @@ class Celery:
         See Also:
             :class:`~@Beat`.
         """
-        return self.subclass_with_self('celery.apps.beat:Beat')
+        return self.subclass_with_self("celery.apps.beat:Beat")
 
     @cached_property
     def Task(self):
@@ -1464,11 +1510,11 @@ class Celery:
         See Also:
             :class:`celery.result.AsyncResult`.
         """
-        return self.subclass_with_self('celery.result:AsyncResult')
+        return self.subclass_with_self("celery.result:AsyncResult")
 
     @cached_property
     def ResultSet(self):
-        return self.subclass_with_self('celery.result:ResultSet')
+        return self.subclass_with_self("celery.result:ResultSet")
 
     @cached_property
     def GroupResult(self):
@@ -1477,21 +1523,41 @@ class Celery:
         See Also:
             :class:`celery.result.GroupResult`.
         """
-        return self.subclass_with_self('celery.result:GroupResult')
+        return self.subclass_with_self("celery.result:GroupResult")
 
     @property
     def pool(self):
-        """Broker connection pool: :class:`~@pool`.
+        """Broker connection pool (legacy, not used in celery-asyncio).
+
+        In celery-asyncio, use :attr:`async_connection` instead.
+        This property exists for backward compatibility but returns None.
 
         Note:
             This attribute is not related to the workers concurrency pool.
         """
-        if self._pool is None:
-            self._ensure_after_fork()
-            limit = self.conf.broker_pool_limit
-            pools.set_limit(limit)
-            self._pool = pools.connections[self.connection_for_write()]
-        return self._pool
+        # In celery-asyncio, we don't use sync connection pools.
+        # All operations go through the async connection.
+        return None
+
+    @property
+    def async_connection(self):
+        """Shared async connection for this app.
+
+        This connection is lazily created and shared across all async operations.
+        It is the primary connection mechanism in celery-asyncio.
+        """
+        if self._async_connection is None:
+            self._async_connection = self.connection_for_write()
+        return self._async_connection
+
+    async def ensure_async_connection(self):
+        """Ensure the async connection is established.
+
+        Returns the connected async connection.
+        """
+        conn = self.async_connection
+        await conn.connect()
+        return conn
 
     @property
     def current_task(self):
@@ -1604,7 +1670,14 @@ class Celery:
 
     @property
     def producer_pool(self):
-        return self.amqp.producer_pool
+        """Legacy producer pool (not used in celery-asyncio).
+
+        Raises NotImplementedError as celery-asyncio uses async producers directly.
+        """
+        raise NotImplementedError(
+            "producer_pool is not available in celery-asyncio. "
+            "Use async methods like asend_task() instead."
+        )
 
     def uses_utc_timezone(self):
         """Check if the application uses the UTC timezone."""
@@ -1621,8 +1694,7 @@ class Celery:
         if not conf.timezone:
             if conf.enable_utc:
                 return timezone.utc
-            else:
-                return timezone.local
+            return timezone.local
         return timezone.get_timezone(conf.timezone)
 
 

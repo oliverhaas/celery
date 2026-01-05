@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from datetime import timedelta
 from weakref import WeakValueDictionary
 
-from kombu import Connection, Consumer, Exchange, Producer, Queue, pools
+from kombu import Connection, Consumer, Exchange, Producer, Queue
 from kombu.common import Broadcast
 from kombu.utils.functional import maybe_list
 from kombu.utils.objects import cached_property
@@ -18,7 +18,7 @@ from celery.utils.time import maybe_make_aware
 
 from . import routes as _routes
 
-__all__ = ('AMQP', 'Queues', 'task_message')
+__all__ = ("AMQP", "Queues", "task_message")
 
 #: earliest date supported by time.mktime.
 INT_MIN = -2147483648
@@ -29,11 +29,11 @@ QUEUE_FORMAT = """
 key={0.routing_key}
 """
 
-task_message = namedtuple('task_message',
-                          ('headers', 'properties', 'body', 'sent_event'))
+task_message = namedtuple("task_message",
+                          ("headers", "properties", "body", "sent_event"))
 
 
-def utf8dict(d, encoding='utf-8'):
+def utf8dict(d, encoding="utf-8"):
     return {k.decode(encoding) if isinstance(k, bytes) else k: v
             for k, v in d.items()}
 
@@ -122,13 +122,13 @@ class Queues(dict):
 
     def add_compat(self, name, **options):
         # docs used to use binding_key as routing key
-        options.setdefault('routing_key', options.get('binding_key'))
-        if options['routing_key'] is None:
-            options['routing_key'] = name
+        options.setdefault("routing_key", options.get("binding_key"))
+        if options["routing_key"] is None:
+            options["routing_key"] = name
         return self._add(Queue.from_dict(name, **options))
 
     def _add(self, queue):
-        if queue.exchange is None or queue.exchange.name == '':
+        if queue.exchange is None or queue.exchange.name == "":
             queue.exchange = self.default_exchange
         if not queue.routing_key:
             queue.routing_key = self.default_routing_key
@@ -140,19 +140,19 @@ class Queues(dict):
         return queue
 
     def _set_max_priority(self, args):
-        if 'x-max-priority' not in args and self.max_priority is not None:
-            return args.update({'x-max-priority': self.max_priority})
+        if "x-max-priority" not in args and self.max_priority is not None:
+            return args.update({"x-max-priority": self.max_priority})
 
     def format(self, indent=0, indent_first=True):
         """Format routing table into string for log dumps."""
         active = self.consume_from
         if not active:
-            return ''
+            return ""
         info = [QUEUE_FORMAT.strip().format(q)
                 for _, q in sorted(active.items())]
         if indent_first:
-            return textindent('\n'.join(info), indent)
-        return info[0] + '\n' + textindent('\n'.join(info[1:]), indent)
+            return textindent("\n".join(info), indent)
+        return info[0] + "\n" + textindent("\n".join(info[1:]), indent)
 
     def select_add(self, queue, **kwargs):
         """Add new task queue that'll be consumed from.
@@ -280,8 +280,8 @@ class AMQP:
             max_priority = conf.task_queue_max_priority
         if not queues and conf.task_default_queue:
             queue_arguments = None
-            if conf.task_default_queue_type == 'quorum':
-                queue_arguments = {'x-queue-type': 'quorum'}
+            if conf.task_default_queue_type == "quorum":
+                queue_arguments = {"x-queue-type": "quorum"}
             queues = (Queue(conf.task_default_queue,
                             exchange=self.default_exchange,
                             routing_key=default_routing_key,
@@ -302,7 +302,7 @@ class AMQP:
     def Router(self, queues=None, create_missing=None):
         """Return the current task router."""
         return _routes.Router(self.routes, queues or self.queues,
-                              self.app.either('task_create_missing_queues',
+                              self.app.either("task_create_missing_queues",
                                               create_missing), app=self.app)
 
     def flush_routes(self):
@@ -330,18 +330,18 @@ class AMQP:
         args = args or ()
         kwargs = kwargs or {}
         if not isinstance(args, (list, tuple)):
-            raise TypeError('task args must be a list or tuple')
+            raise TypeError("task args must be a list or tuple")
         if not isinstance(kwargs, Mapping):
-            raise TypeError('task keyword arguments must be a mapping')
+            raise TypeError("task keyword arguments must be a mapping")
         if countdown:  # convert countdown to ETA
-            self._verify_seconds(countdown, 'countdown')
+            self._verify_seconds(countdown, "countdown")
             now = now or self.app.now()
             timezone = timezone or self.app.timezone
             eta = maybe_make_aware(
                 now + timedelta(seconds=countdown), tz=timezone,
             )
         if isinstance(expires, numbers.Real):
-            self._verify_seconds(expires, 'expires')
+            self._verify_seconds(expires, "expires")
             now = now or self.app.now()
             timezone = timezone or self.app.timezone
             expires = maybe_make_aware(
@@ -363,51 +363,51 @@ class AMQP:
 
         stamps = {header: options[header] for header in stamped_headers or []}
         headers = {
-            'lang': 'py',
-            'task': name,
-            'id': task_id,
-            'shadow': shadow,
-            'eta': eta,
-            'expires': expires,
-            'group': group_id,
-            'group_index': group_index,
-            'retries': retries,
-            'timelimit': [time_limit, soft_time_limit],
-            'root_id': root_id,
-            'parent_id': parent_id,
-            'argsrepr': argsrepr,
-            'kwargsrepr': kwargsrepr,
-            'origin': origin or anon_nodename(),
-            'ignore_result': ignore_result,
-            'replaced_task_nesting': replaced_task_nesting,
-            'stamped_headers': stamped_headers,
-            'stamps': stamps,
+            "lang": "py",
+            "task": name,
+            "id": task_id,
+            "shadow": shadow,
+            "eta": eta,
+            "expires": expires,
+            "group": group_id,
+            "group_index": group_index,
+            "retries": retries,
+            "timelimit": [time_limit, soft_time_limit],
+            "root_id": root_id,
+            "parent_id": parent_id,
+            "argsrepr": argsrepr,
+            "kwargsrepr": kwargsrepr,
+            "origin": origin or anon_nodename(),
+            "ignore_result": ignore_result,
+            "replaced_task_nesting": replaced_task_nesting,
+            "stamped_headers": stamped_headers,
+            "stamps": stamps,
         }
 
         return task_message(
             headers=headers,
             properties={
-                'correlation_id': task_id,
-                'reply_to': reply_to or '',
+                "correlation_id": task_id,
+                "reply_to": reply_to or "",
             },
             body=(
                 args, kwargs, {
-                    'callbacks': callbacks,
-                    'errbacks': errbacks,
-                    'chain': chain,
-                    'chord': chord,
+                    "callbacks": callbacks,
+                    "errbacks": errbacks,
+                    "chain": chain,
+                    "chord": chord,
                 },
             ),
             sent_event={
-                'uuid': task_id,
-                'root_id': root_id,
-                'parent_id': parent_id,
-                'name': name,
-                'args': argsrepr,
-                'kwargs': kwargsrepr,
-                'retries': retries,
-                'eta': eta,
-                'expires': expires,
+                "uuid": task_id,
+                "root_id": root_id,
+                "parent_id": parent_id,
+                "name": name,
+                "args": argsrepr,
+                "kwargs": kwargsrepr,
+                "retries": retries,
+                "eta": eta,
+                "expires": expires,
             } if create_sent_event else None,
         )
 
@@ -423,15 +423,15 @@ class AMQP:
         kwargs = kwargs or {}
         utc = self.utc
         if not isinstance(args, (list, tuple)):
-            raise TypeError('task args must be a list or tuple')
+            raise TypeError("task args must be a list or tuple")
         if not isinstance(kwargs, Mapping):
-            raise TypeError('task keyword arguments must be a mapping')
+            raise TypeError("task keyword arguments must be a mapping")
         if countdown:  # convert countdown to ETA
-            self._verify_seconds(countdown, 'countdown')
+            self._verify_seconds(countdown, "countdown")
             now = now or self.app.now()
             eta = now + timedelta(seconds=countdown)
         if isinstance(expires, numbers.Real):
-            self._verify_seconds(expires, 'expires')
+            self._verify_seconds(expires, "expires")
             now = now or self.app.now()
             expires = now + timedelta(seconds=expires)
         eta = eta and eta.isoformat()
@@ -440,40 +440,40 @@ class AMQP:
         return task_message(
             headers={},
             properties={
-                'correlation_id': task_id,
-                'reply_to': reply_to or '',
+                "correlation_id": task_id,
+                "reply_to": reply_to or "",
             },
             body={
-                'task': name,
-                'id': task_id,
-                'args': args,
-                'kwargs': kwargs,
-                'group': group_id,
-                'group_index': group_index,
-                'retries': retries,
-                'eta': eta,
-                'expires': expires,
-                'utc': utc,
-                'callbacks': callbacks,
-                'errbacks': errbacks,
-                'timelimit': (time_limit, soft_time_limit),
-                'taskset': group_id,
-                'chord': chord,
+                "task": name,
+                "id": task_id,
+                "args": args,
+                "kwargs": kwargs,
+                "group": group_id,
+                "group_index": group_index,
+                "retries": retries,
+                "eta": eta,
+                "expires": expires,
+                "utc": utc,
+                "callbacks": callbacks,
+                "errbacks": errbacks,
+                "timelimit": (time_limit, soft_time_limit),
+                "taskset": group_id,
+                "chord": chord,
             },
             sent_event={
-                'uuid': task_id,
-                'name': name,
-                'args': saferepr(args),
-                'kwargs': saferepr(kwargs),
-                'retries': retries,
-                'eta': eta,
-                'expires': expires,
+                "uuid": task_id,
+                "name": name,
+                "args": saferepr(args),
+                "kwargs": saferepr(kwargs),
+                "retries": retries,
+                "eta": eta,
+                "expires": expires,
             } if create_sent_event else None,
         )
 
     def _verify_seconds(self, s, what):
         if s < INT_MIN:
-            raise ValueError(f'{what} is out of range: {s!r}')
+            raise ValueError(f"{what} is out of range: {s!r}")
         return s
 
     def _create_task_sender(self):
@@ -532,11 +532,11 @@ class AMQP:
                 try:
                     exchange_type = queue.exchange.type
                 except AttributeError:
-                    exchange_type = 'direct'
+                    exchange_type = "direct"
 
             # convert to anon-exchange, when exchange not set and direct ex.
-            if (not exchange or not routing_key) and exchange_type == 'direct':
-                exchange, routing_key = '', qname
+            if (not exchange or not routing_key) and exchange_type == "direct":
+                exchange, routing_key = "", qname
             elif exchange is None:
                 # not topic exchange, and exchange not undefined
                 exchange = queue.exchange.name or default_exchange
@@ -574,15 +574,15 @@ class AMQP:
             if sent_receivers:  # XXX deprecated
                 if isinstance(body, tuple):  # protocol version 2
                     send_task_sent(
-                        sender=name, task_id=headers2['id'], task=name,
+                        sender=name, task_id=headers2["id"], task=name,
                         args=body[0], kwargs=body[1],
-                        eta=headers2['eta'], taskset=headers2['group'],
+                        eta=headers2["eta"], taskset=headers2["group"],
                     )
                 else:  # protocol version 1
                     send_task_sent(
-                        sender=name, task_id=body['id'], task=name,
-                        args=body['args'], kwargs=body['kwargs'],
-                        eta=body['eta'], taskset=body['taskset'],
+                        sender=name, task_id=body["id"], task=name,
+                        args=body["args"], kwargs=body["kwargs"],
+                        eta=body["eta"], taskset=body["taskset"],
                     )
             if sent_event:
                 evd = event_dispatcher or default_evd
@@ -590,14 +590,150 @@ class AMQP:
                 if isinstance(exname, Exchange):
                     exname = exname.name
                 sent_event.update({
-                    'queue': qname,
-                    'exchange': exname,
-                    'routing_key': routing_key,
+                    "queue": qname,
+                    "exchange": exname,
+                    "routing_key": routing_key,
                 })
-                evd.publish('task-sent', sent_event,
+                evd.publish("task-sent", sent_event,
                             producer, retry=retry, retry_policy=retry_policy)
             return ret
         return send_task_message
+
+    def _create_async_task_sender(self):
+        """Create async version of send_task_message for native asyncio.
+
+        This creates a coroutine function that uses kombu-asyncio's native
+        async Producer.publish() instead of wrapping sync calls.
+        """
+        default_delivery_mode = self.app.conf.task_default_delivery_mode
+        default_queue = self.default_queue
+        queues = self.queues
+        send_before_publish = signals.before_task_publish.send
+        before_receivers = signals.before_task_publish.receivers
+        send_after_publish = signals.after_task_publish.send
+        after_receivers = signals.after_task_publish.receivers
+
+        send_task_sent = signals.task_sent.send   # XXX compat
+        sent_receivers = signals.task_sent.receivers
+
+        default_evd = self._event_dispatcher
+        default_exchange = self.default_exchange
+
+        default_rkey = self.app.conf.task_default_routing_key
+        default_serializer = self.app.conf.task_serializer
+        default_compressor = self.app.conf.task_compression
+
+        async def asend_task_message(producer, name, message,
+                                     exchange=None, routing_key=None, queue=None,
+                                     event_dispatcher=None,
+                                     serializer=None, delivery_mode=None,
+                                     compression=None, declare=None,
+                                     headers=None, exchange_type=None,
+                                     **kwargs):
+            """Async version of send_task_message using native asyncio.
+
+            Note: retry, retry_policy, timeout, confirm_timeout are not supported
+            in the native async version. Retry logic should be handled at a higher
+            level if needed.
+            """
+            headers2, properties, body, sent_event = message
+            if headers:
+                headers2.update(headers)
+            if kwargs:
+                properties.update(kwargs)
+
+            qname = queue
+            if queue is None and exchange is None:
+                queue = default_queue
+            if queue is not None:
+                if isinstance(queue, str):
+                    qname, queue = queue, queues[queue]
+                else:
+                    qname = queue.name
+
+            if delivery_mode is None:
+                try:
+                    delivery_mode = queue.exchange.delivery_mode
+                except AttributeError:
+                    pass
+                delivery_mode = delivery_mode or default_delivery_mode
+
+            if exchange_type is None:
+                try:
+                    exchange_type = queue.exchange.type
+                except AttributeError:
+                    exchange_type = "direct"
+
+            # convert to anon-exchange, when exchange not set and direct ex.
+            if (not exchange or not routing_key) and exchange_type == "direct":
+                exchange, routing_key = "", qname
+            elif exchange is None:
+                # not topic exchange, and exchange not undefined
+                exchange = queue.exchange.name or default_exchange
+                routing_key = routing_key or queue.routing_key or default_rkey
+
+            # Handle declare - in kombu-asyncio, we need to declare queues explicitly
+            if declare:
+                channel = await producer._ensure_channel()
+                for entity in declare:
+                    if hasattr(entity, "declare"):
+                        await entity.declare(channel)
+
+            if before_receivers:
+                send_before_publish(
+                    sender=name, body=body,
+                    exchange=exchange, routing_key=routing_key,
+                    declare=declare, headers=headers2,
+                    properties=properties, retry_policy=None,
+                )
+
+            # Native async publish
+            await producer.publish(
+                body,
+                exchange=exchange,
+                routing_key=routing_key,
+                serializer=serializer or default_serializer,
+                compression=compression or default_compressor,
+                delivery_mode=delivery_mode,
+                headers=headers2,
+                **properties
+            )
+
+            if after_receivers:
+                send_after_publish(sender=name, body=body, headers=headers2,
+                                   exchange=exchange, routing_key=routing_key)
+            if sent_receivers:  # XXX deprecated
+                if isinstance(body, tuple):  # protocol version 2
+                    send_task_sent(
+                        sender=name, task_id=headers2["id"], task=name,
+                        args=body[0], kwargs=body[1],
+                        eta=headers2["eta"], taskset=headers2["group"],
+                    )
+                else:  # protocol version 1
+                    send_task_sent(
+                        sender=name, task_id=body["id"], task=name,
+                        args=body["args"], kwargs=body["kwargs"],
+                        eta=body["eta"], taskset=body["taskset"],
+                    )
+            if sent_event:
+                evd = event_dispatcher or default_evd
+                exname = exchange
+                if isinstance(exname, Exchange):
+                    exname = exname.name
+                sent_event.update({
+                    "queue": qname,
+                    "exchange": exname,
+                    "routing_key": routing_key,
+                })
+                # Note: async event publish would need to be implemented
+                evd.publish("task-sent", sent_event, producer)
+
+        return asend_task_message
+
+    @cached_property
+    def asend_task_message(self):
+        """Async version of send_task_message."""
+        return self._create_async_task_sender()
 
     @cached_property
     def default_queue(self):
@@ -626,14 +762,9 @@ class AMQP:
     def router(self, value):
         return value
 
-    @property
-    def producer_pool(self):
-        if self._producer_pool is None:
-            self._producer_pool = pools.producers[
-                self.app.connection_for_write()]
-            self._producer_pool.limit = self.app.pool.limit
-        return self._producer_pool
-    publisher_pool = producer_pool  # compat alias
+    # Note: producer_pool is not used in celery-asyncio.
+    # Async operations create producers directly from the shared async connection.
+    # The sync API wraps async methods with async_to_sync.
 
     @cached_property
     def default_exchange(self):
@@ -651,7 +782,6 @@ class AMQP:
         return self.app.events.Dispatcher(enabled=False)
 
     def _handle_conf_update(self, *args, **kwargs):
-        if ('task_routes' in kwargs or 'task_routes' in args):
+        if ("task_routes" in kwargs or "task_routes" in args):
             self.flush_routes()
             self.router = self.Router()
-        return
