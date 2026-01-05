@@ -2,10 +2,10 @@
 
 |build-status| |coverage| |license| |wheel| |semgrep| |pyversion| |pyimp| |ocbackerbadge| |ocsponsorbadge|
 
-:Version: 5.6.0rc1 (recovery)
+:Version: 6.0.0a1 (asyncio)
 :Web: https://docs.celeryq.dev/en/stable/index.html
-:Download: https://pypi.org/project/celery/
-:Source: https://github.com/celery/celery/
+:Download: https://pypi.org/project/celery-asyncio/
+:Source: https://github.com/oliverhaas/celery/tree/main-asyncio
 :DeepWiki: |deepwiki|
 :Keywords: task, queue, job, async, rabbitmq, amqp, redis,
   python, distributed, actors

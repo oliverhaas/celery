@@ -5,7 +5,7 @@ import re
 
 import setuptools
 
-NAME = 'celery'
+NAME = 'celery-asyncio'
 
 # -*- Extras -*-
 
@@ -153,18 +153,18 @@ setuptools.setup(
     include_package_data=True,
     entry_points={
         'console_scripts': [
-            'celery = celery.__main__:main',
+            'celery-asyncio = celery.__main__:main',
         ]
     },
     project_urls={
         "Documentation": "https://docs.celeryq.dev/en/stable/",
         "Changelog": "https://docs.celeryq.dev/en/stable/changelog.html",
-        "Code": "https://github.com/celery/celery",
-        "Tracker": "https://github.com/celery/celery/issues",
+        "Code": "https://github.com/oliverhaas/celery/tree/main-asyncio",
+        "Tracker": "https://github.com/oliverhaas/celery/issues",
         "Funding": "https://opencollective.com/celery"
     },
     classifiers=[
-        "Development Status :: 5 - Production/Stable",
+        "Development Status :: 3 - Alpha",
         "Topic :: System :: Distributed Computing",
         "Topic :: Software Development :: Object Brokering",
         "Framework :: Celery",

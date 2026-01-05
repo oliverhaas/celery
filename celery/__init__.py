@@ -15,9 +15,9 @@ from collections import namedtuple
 # Lazy loading
 from . import local
 
-SERIES = 'recovery'
+SERIES = 'asyncio'
 
-__version__ = '5.6.0rc1'
+__version__ = '6.0.0a1'
 __author__ = 'Ask Solem'
 __contact__ = 'auvipy@gmail.com'
 __homepage__ = 'https://docs.celeryq.dev/'
