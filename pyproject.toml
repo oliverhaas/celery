@@ -1,55 +1,268 @@
-[tool.pytest.ini_options]
-addopts = "--strict-markers"
-testpaths = "t/unit/"
-python_classes = "test_*"
-xfail_strict=true
-markers = ["sleepdeprived_patched_module", "masked_modules", "patched_environ", "patched_module", "flaky", "timeout", "amqp"]
-
-[tool.mypy]
-warn_unused_configs = true
-strict = false
-follow_imports = "skip"
-show_error_codes = true
-disallow_untyped_defs = true
-ignore_missing_imports = true
-files = [
-    "celery/__main__.py",
-    "celery/states.py",
-    "celery/signals.py",
-    "celery/fixups",
-    "celery/concurrency/thread.py",
-    "celery/security/certificate.py",
-    "celery/utils/text.py",
-    "celery/schedules.py",
-    "celery/apps/beat.py",
+[project]
+name = "celery-asyncio"
+version = "6.0.0a1"
+description = "Distributed Task Queue with native asyncio support"
+readme = "README.rst"
+license = "BSD-3-Clause"
+requires-python = ">=3.10"
+keywords = ["task", "queue", "job", "async", "asyncio", "rabbitmq", "amqp", "redis", "python", "distributed", "actors"]
+authors = [{ name = "Ask Solem", email = "auvipy@gmail.com" }]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Framework :: AsyncIO",
+  "Framework :: Celery",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: BSD License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Topic :: Software Development :: Object Brokering",
+  "Topic :: System :: Distributed Computing",
+]
+dependencies = [
+  "billiard>=4.2.1,<5.0",
+  "kombu-asyncio>=6.0.0a1",
+  "vine>=5.1.0,<6.0",
+  "click>=8.1.2,<9.0",
+  "click-didyoumean>=0.3.0",
+  "click-repl>=0.2.0",
+  "click-plugins>=1.1.1",
+  "python-dateutil>=2.8.2",
+  "tzlocal",
 ]
 
-[tool.codespell]
-ignore-words-list = "assertin"
-skip = "./.*,docs/AUTHORS.txt,docs/history/*,docs/spelling_wordlist.txt,Changelog.rst,CONTRIBUTORS.txt,*.key"
+[project.urls]
+Changelog = "https://github.com/oliverhaas/celery/blob/main-asyncio/Changelog.rst"
+Documentation = "https://docs.celeryq.dev/en/stable/"
+Source = "https://github.com/oliverhaas/celery/tree/main-asyncio"
+Tracker = "https://github.com/oliverhaas/celery/issues"
+
+[project.scripts]
+celery-asyncio = "celery.__main__:main"
+
+[project.optional-dependencies]
+# Serializers
+auth = ["cryptography"]
+msgpack = ["msgpack"]
+yaml = ["PyYAML>=3.10"]
+
+# Concurrency (legacy - will be removed)
+eventlet = ["eventlet>=0.32.0"]
+gevent = ["gevent>=1.5.0"]
+
+# Transports and Backends
+redis = ["kombu-asyncio[redis]"]
+sqs = [
+  "kombu-asyncio[sqs]>=6.0.0a1",
+  "boto3>=1.26.143",
+  "pycurl>=7.45.4; sys_platform != 'win32' and platform_python_implementation == 'CPython'",
+  "urllib3>=1.26.16",
+]
+mongodb = ["kombu-asyncio[mongodb]"]
+sqlalchemy = ["kombu-asyncio[sqlalchemy]", "sqlalchemy>=1.4.0"]
+
+# Result backends
+memcache = ["pylibmc"]
+pymemcache = ["python-memcached"]
+cassandra = ["cassandra-driver>=3.25.0"]
+elasticsearch = ["elasticsearch>=7.0.0"]
+dynamodb = ["boto3>=1.26.143"]
+s3 = ["boto3>=1.26.143"]
+gcs = ["google-cloud-storage>=2.10.0"]
+azureblockblob = ["azure-storage-blob>=12.15.0"]
+arangodb = ["pyArango>=2.0.2"]
+cosmosdbsql = ["pydocumentdb>=2.3.5"]
+couchbase = ["couchbase>=3.0.0"]
+couchdb = ["pycouchdb"]
+consul = ["python-consul2"]
+
+# Testing
+tblib = ["tblib>=1.3.0"]
+pytest = ["pytest>=8.0.0"]
+
+# Django
+django = ["Django>=4.2"]
+
+# Compression
+brotli = ["brotli>=1.0.0"]
+zstd = ["zstandard>=0.22.0"]
+
+[dependency-groups]
+dev = [
+  "pre-commit>=4.0.0",
+  "pytest>=8.0.0",
+  "pytest-asyncio>=1.0.0",
+  "pytest-cov>=5.0.0",
+  "pytest-timeout>=2.0.0",
+  "ruff>=0.9.0",
+]
+
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["celery"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+explicit-preview-rules = true
+fixable = ["ALL"]
+ignore = [
+  "A001",    # Variable shadowing builtin - legacy patterns
+  "A002",    # Argument shadowing builtin - legacy patterns
+  "ANN",     # Type annotations - legacy code not fully annotated
+  "ARG001",  # Signal handlers and overrides have required signatures
+  "ARG002",
+  "B007",    # Loop variable not used - sometimes intentional
+  "B904",    # Raise from - legacy exception handling
+  "BLE001",  # Catching blind exceptions - sometimes needed
+  "C901",    # Some functions are inherently complex
+  "COM812",  # Conflicts with ruff-format
+  "D",       # Docstring rules - existing code lacks comprehensive docstrings
+  "E5",      # 120 char limit is sufficient
+  "EM101",   # Extracting exception messages to variables hurts readability
+  "EM102",
+  "ERA001",  # Commented-out code - keeping for reference
+  "FBT001",  # Boolean traps - too many violations, breaks compatibility
+  "FBT002",
+  "FIX002",  # TODO comments - allowed
+  "N801",    # Class naming follows celery conventions
+  "N802",    # Function naming follows celery conventions
+  "N803",    # Argument naming follows celery conventions
+  "N806",    # Variable naming follows celery conventions
+  "N818",    # Exception naming follows celery conventions
+  "PERF203", # Try-except in loop - sometimes needed
+  "PGH004",  # Legacy noqa comments
+  "PLC0415", # Lazy imports for optional dependencies
+  "PLR0913", # Too many arguments - task APIs need many options
+  "PLR1704", # Redefining argument in context manager
+  "PLW2901", # Redefining loop variable - sometimes intentional
+  "PTH",     # Pathlib - legacy code uses os.path
+  "PYI024",  # namedtuple usage follows celery patterns
+  "PYI034",  # __aenter__ return type - legacy patterns
+  "RET503",  # Missing explicit return - legacy patterns
+  "RSE102",  # Unnecessary parentheses on raised exception
+  "RUF005",  # Tuple concatenation is clearer
+  "RUF012",  # Mutable class attributes - used intentionally
+  "RUF013",  # Implicit Optional - legacy patterns
+  "RUF015",  # Readability over micro-optimization
+  "RUF059",  # Keep unused variables explicit
+  "S101",    # Assert in non-test code - sometimes used
+  "S110",    # Try-except-pass - sometimes needed
+  "SIM105",  # contextlib.suppress - legacy patterns
+  "SIM108",  # Ternary operator - keep explicit if/else
+  "SIM212",  # Negated condition - keep as is
+  "SLF001",  # Private member access needed for internals
+  "T201",    # Print statements - for debugging
+  "TC003",   # Move import into TYPE_CHECKING - legacy patterns
+  "TD002",   # TODO author - not needed
+  "TD003",   # TODO issue link - not needed
+  "TRY003",  # Long exception messages are fine
+  "TRY300",  # Try-except in else - legacy patterns
+  "UP031",   # Printf-style formatting - keep for consistency
+  # Additional legacy patterns to ignore
+  "A004",    # Import shadowing builtin
+  "ARG003",  # Unused class method argument
+  "ARG005",  # Unused lambda argument
+  "B018",    # Useless expression
+  "B025",    # Duplicate exception handler
+  "B028",    # No stacklevel in warnings
+  "B905",    # Zip without strict
+  "C408",    # Unnecessary dict call
+  "DTZ005",  # Datetime without timezone
+  "E402",    # Module level import not at top
+  "EM103",   # Exception string formatting
+  "F821",    # Undefined name (usually TYPE_CHECKING)
+  "F822",    # Undefined name in __all__
+  "FIX001",  # FIXME comments
+  "FIX003",  # XXX comments
+  "G001",    # Logging string format
+  "G004",    # Logging f-string
+  "G201",    # Logging .exception with exc_info
+  "ISC002",  # Implicit string concatenation
+  "LOG014",  # Logging extra argument
+  "N804",    # First argument of classmethod
+  "N805",    # First argument of method
+  "N812",    # Lowercase imported as non-lowercase
+  "N813",    # Camelcase imported as lowercase
+  "N999",    # Invalid module name
+  "PERF102", # Dictionary keys as set
+  "PGH003",  # Type: ignore without code
+  "PLC0205", # __slots__ expected class variables
+  "PLR0912", # Too many branches
+  "PLR1714", # Consider merging comparisons
+  "PLR2004", # Magic value comparison
+  "PLW0603", # Global statement
+  "PLW1508", # Invalid envvar default
+  "PLW1641", # Object without __hash__
+  "PYI018",  # Unused TypeVar
+  "PYI036",  # Star annotation
+  "RET504",  # Unnecessary variable before return
+  "RUF003",  # Ambiguous unicode character
+  "RUF006",  # asyncio.create_task without reference
+  "RUF022",  # __all__ not sorted
+  "RUF046",  # Unnecessary cast
+  "S301",    # Pickle usage
+  "SIM101",  # Multiple isinstance calls
+  "SIM102",  # Nested if statements
+  "SIM103",  # Return bool directly
+  "SIM110",  # Use any/all
+  "SIM115",  # Open context manager
+  "SIM118",  # Dict keys iteration
+  "TD001",   # Invalid TODO tag
+  "TD004",   # Missing TODO colon
+  "TRY002",  # Raise vanilla exception
+  "TRY201",  # Use raise without exception
+  "TRY301",  # Abstract raise to inner function
+  "TRY400",  # Use logging.exception
+]
+preview = true
+select = ["ALL"]
+unfixable = []
+
+[tool.ruff.lint.per-file-ignores]
+"t/**" = [
+  "PLR0913", # Too many arguments in test fixtures
+  "PLR2004", # Magic values in tests are fine
+  "S101",    # assert in tests
+]
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers"
+testpaths = ["t/unit"]
+python_classes = "test_*"
+xfail_strict = true
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+  "sleepdeprived_patched_module",
+  "masked_modules",
+  "patched_environ",
+  "patched_module",
+  "flaky",
+  "timeout",
+  "amqp",
+]
 
 [tool.coverage.run]
 branch = true
-cover_pylib = false
-include = ["*celery/*"]
-omit = ["celery.tests.*"]
+source = ["celery"]
+omit = ["*/__init__.py"]
 
 [tool.coverage.report]
 exclude_lines = [
-    "pragma: no cover",
-    "if TYPE_CHECKING:",
-    "except ImportError:"
-]
-omit = [
-    "*/python?.?/*",
-    "*/site-packages/*",
-    "*/pypy/*",
-    "*/celery/bin/graph.py",
-    "*celery/bin/logtool.py",
-    "*celery/task/base.py",
-    "*celery/contrib/sphinx.py",
-    "*celery/concurrency/asynpool.py",
-    "*celery/utils/debug.py",
-    "*celery/contrib/testing/*",
-    "*celery/contrib/pytest.py"
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "except ImportError:",
+  "raise NotImplementedError",
 ]
