@@ -57,14 +57,6 @@ gevent = ["gevent>=1.5.0"]
 
 # Transports and Backends
 redis = ["kombu-asyncio[redis]"]
-sqs = [
-  "kombu-asyncio[sqs]>=6.0.0a1",
-  "boto3>=1.26.143",
-  "pycurl>=7.45.4; sys_platform != 'win32' and platform_python_implementation == 'CPython'",
-  "urllib3>=1.26.16",
-]
-mongodb = ["kombu-asyncio[mongodb]"]
-sqlalchemy = ["kombu-asyncio[sqlalchemy]", "sqlalchemy>=1.4.0"]
 
 # Result backends
 memcache = ["pylibmc"]
