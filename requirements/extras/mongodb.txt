@@ -1,1 +1,1 @@
-kombu[mongodb]
+kombu-asyncio[mongodb]

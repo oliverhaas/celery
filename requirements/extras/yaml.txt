@@ -1,1 +1,1 @@
-kombu[yaml]
+kombu-asyncio[yaml]

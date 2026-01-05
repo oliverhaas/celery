@@ -1,1 +1,1 @@
-kombu[sqlalchemy]
+kombu-asyncio[sqlalchemy]
