@@ -811,3 +811,84 @@ a :program:`celery beat` schedule:
 
     It's a good idea to set the ``task.ignore_result`` attribute in
     this case.
+
+
+.. _routing-native-delayed-delivery:
+
+Native Delayed Delivery
+-----------------------
+:supported transports: Transports with native delayed delivery support
+
+.. versionadded:: 5.6
+
+Some transports support native delayed delivery, allowing tasks with
+``eta`` or ``countdown`` to be handled by the broker itself rather than
+having workers poll for due tasks.
+
+When a transport supports native delayed delivery, Celery automatically
+ensures the ``eta`` value is available in message headers in ISO format,
+allowing the transport to read and handle delayed delivery natively.
+
+Enabling Native Delayed Delivery
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+To enable native delayed delivery for transports that support it, set
+the :setting:`broker_native_delayed_delivery_enabled` setting to ``True``:
+
+.. code-block:: python
+
+    from celery import Celery
+
+    app = Celery('myapp')
+    app.conf.update(
+        broker_url='redis+delayed://localhost:6379/0',
+        broker_native_delayed_delivery_enabled=True,
+    )
+
+    @app.task
+    def my_task():
+        print("Hello!")
+
+    # Tasks with countdown/eta will use native transport delay
+    my_task.apply_async(countdown=120)  # Delivered in 2 minutes
+
+When enabled, the ``NativeDelayedDeliveryStep`` bootstep:
+
+- Detects if the transport supports native delayed delivery
+- Calls the transport's setup method when the worker starts
+- Calls the transport's teardown method when the worker stops
+
+For transports that don't support native delayed delivery, the bootstep
+logs a debug message and continues normally.
+
+Transport Interface
+~~~~~~~~~~~~~~~~~~~
+
+For transport developers, native delayed delivery support requires
+implementing these methods on the transport channel:
+
+- ``supports_native_delayed_delivery``: A boolean property that returns
+  ``True`` if the transport supports native delayed delivery.
+- ``setup_native_delayed_delivery(queues)``: Called when a worker starts
+  consuming, with the list of queue names being consumed.
+- ``teardown_native_delayed_delivery()``: Called when the worker stops.
+
+Example transport implementation:
+
+.. code-block:: python
+
+    class MyChannel(Channel):
+        @property
+        def supports_native_delayed_delivery(self):
+            return True
+
+        def setup_native_delayed_delivery(self, queues):
+            # Start background processing for delayed messages
+            self._delayed_processor = DelayedProcessor(queues)
+            self._delayed_processor.start()
+
+        def teardown_native_delayed_delivery(self):
+            # Stop background processing
+            if self._delayed_processor:
+                self._delayed_processor.stop()
+                self._delayed_processor = None

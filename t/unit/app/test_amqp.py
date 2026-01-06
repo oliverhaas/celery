@@ -5,7 +5,7 @@ import pytest
 from kombu import Exchange, Queue
 
 from celery import uuid
-from celery.app.amqp import Queues, utf8dict
+from celery.app.amqp import Queues, convert_eta_for_native_transport, utf8dict
 from celery.utils.time import to_utc
 
 
@@ -453,3 +453,106 @@ class test_as_task_v2(test_AMQP_Base):
         assert embed['callbacks'] == [utf8dict(t.s(1)), utf8dict(t.s(2))]
         assert embed['errbacks'] == [utf8dict(t.s(3)), utf8dict(t.s(4))]
         assert embed['chord'] == utf8dict(t.s(5))
+
+
+class test_convert_eta_for_native_transport:
+    """Tests for the convert_eta_for_native_transport signal handler."""
+
+    def test_headers_none_returns_early(self):
+        """Signal handler should return early when headers is None."""
+        # Should not raise
+        convert_eta_for_native_transport(
+            sender='task.name',
+            body=None,
+            headers=None,
+            properties=None,
+        )
+
+    def test_no_eta_returns_early(self):
+        """Signal handler should return early when no eta is present."""
+        headers = {'id': '123', 'task': 'foo'}
+        original_headers = headers.copy()
+        convert_eta_for_native_transport(
+            sender='task.name',
+            body=None,
+            headers=headers,
+            properties=None,
+        )
+        # Headers should be unchanged (no eta added)
+        assert headers == original_headers
+
+    def test_eta_datetime_with_timezone(self):
+        """Signal handler converts datetime eta with timezone to ISO string."""
+        eta = datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc)
+        headers = {'eta': eta}
+        convert_eta_for_native_transport(
+            sender='task.name',
+            body=None,
+            headers=headers,
+            properties=None,
+        )
+        assert headers['eta'] == '2024-01-15T10:30:00+00:00'
+
+    def test_eta_datetime_without_timezone(self):
+        """Signal handler adds UTC timezone to naive datetime eta."""
+        eta = datetime(2024, 1, 15, 10, 30, 0)
+        headers = {'eta': eta}
+        convert_eta_for_native_transport(
+            sender='task.name',
+            body=None,
+            headers=headers,
+            properties=None,
+        )
+        assert headers['eta'] == '2024-01-15T10:30:00+00:00'
+
+    def test_eta_string_preserved(self):
+        """Signal handler preserves string eta in headers."""
+        eta_str = '2024-01-15T10:30:00+00:00'
+        headers = {'eta': eta_str}
+        convert_eta_for_native_transport(
+            sender='task.name',
+            body=None,
+            headers=headers,
+            properties=None,
+        )
+        assert headers['eta'] == eta_str
+
+    def test_eta_from_body_v1_protocol(self):
+        """Signal handler extracts eta from body for protocol v1."""
+        eta_str = '2024-01-15T10:30:00+00:00'
+        headers = {}  # No eta in headers
+        body = {'eta': eta_str, 'task': 'foo'}  # v1 protocol body
+        convert_eta_for_native_transport(
+            sender='task.name',
+            body=body,
+            headers=headers,
+            properties=None,
+        )
+        assert headers['eta'] == eta_str
+
+    def test_eta_in_headers_takes_precedence(self):
+        """Signal handler uses eta from headers over body."""
+        eta_header = '2024-01-15T10:30:00+00:00'
+        eta_body = '2024-01-16T10:30:00+00:00'
+        headers = {'eta': eta_header}
+        body = {'eta': eta_body}
+        convert_eta_for_native_transport(
+            sender='task.name',
+            body=body,
+            headers=headers,
+            properties=None,
+        )
+        assert headers['eta'] == eta_header
+
+    def test_body_tuple_v2_protocol(self):
+        """Signal handler ignores body tuple (v2 protocol) for eta extraction."""
+        headers = {}
+        body = ([], {}, {})  # v2 protocol body
+        convert_eta_for_native_transport(
+            sender='task.name',
+            body=body,
+            headers=headers,
+            properties=None,
+        )
+        # Headers should be unchanged - no eta was found
+        assert 'eta' not in headers

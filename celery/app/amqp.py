@@ -2,7 +2,7 @@
 import numbers
 from collections import namedtuple
 from collections.abc import Mapping
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from weakref import WeakValueDictionary
 
 from kombu import Connection, Consumer, Exchange, Producer, Queue, pools
@@ -18,7 +18,7 @@ from celery.utils.time import maybe_make_aware
 
 from . import routes as _routes
 
-__all__ = ('AMQP', 'Queues', 'task_message')
+__all__ = ('AMQP', 'Queues', 'task_message', 'convert_eta_for_native_transport')
 
 #: earliest date supported by time.mktime.
 INT_MIN = -2147483648
@@ -36,6 +36,54 @@ task_message = namedtuple('task_message',
 def utf8dict(d, encoding='utf-8'):
     return {k.decode(encoding) if isinstance(k, bytes) else k: v
             for k, v in d.items()}
+
+
+@signals.before_task_publish.connect
+def convert_eta_for_native_transport(
+    sender=None,
+    body=None,
+    headers=None,
+    properties=None,
+    **kwargs
+):
+    """Convert eta/countdown to ISO format header for native delayed transports.
+
+    This signal handler ensures that when a transport supports native delayed
+    delivery, the eta value is properly formatted in the message headers.
+    The transport can then read this header to implement delayed delivery
+    natively (e.g., using Redis sorted sets).
+
+    Arguments:
+        sender: The task name being published.
+        body: The task message body.
+        headers: The message headers (mutable).
+        properties: The message properties.
+        **kwargs: Additional signal arguments.
+    """
+    if headers is None:
+        return
+
+    # Extract eta from headers (preferred) or body
+    eta = headers.get('eta')
+    if eta is None and body:
+        if isinstance(body, tuple):
+            # Protocol v2: body is (args, kwargs, embed)
+            pass  # eta should be in headers for v2
+        elif isinstance(body, dict):
+            # Protocol v1: body is a dict
+            eta = body.get('eta')
+
+    if eta is None:
+        return
+
+    # Ensure eta is in ISO format in headers
+    if isinstance(eta, datetime):
+        if eta.tzinfo is None:
+            eta = eta.replace(tzinfo=timezone.utc)
+        headers['eta'] = eta.isoformat()
+    elif isinstance(eta, str):
+        # Already in string format (presumably ISO), ensure it's in headers
+        headers['eta'] = eta
 
 
 class Queues(dict):

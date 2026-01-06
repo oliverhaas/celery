@@ -175,6 +175,7 @@ class Consumer:
             'celery.worker.consumer.control:Control',
             'celery.worker.consumer.tasks:Tasks',
             'celery.worker.consumer.delayed_delivery:DelayedDelivery',
+            'celery.worker.consumer.native_delayed:NativeDelayedDeliveryStep',
             'celery.worker.consumer.consumer:Evloop',
             'celery.worker.consumer.agent:Agent',
         ]
