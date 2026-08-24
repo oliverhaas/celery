@@ -734,7 +734,7 @@ Time Limits
 
 .. versionadded:: 2.0
 
-:pool support: *prefork/gevent (see note below)*
+:pool support: *prefork/gevent/threads (see note below)*
 
 .. sidebar:: Soft, or hard?
 
@@ -780,6 +780,12 @@ limits for client side operation using ``timeout`` argument of
 
     The gevent pool does not implement soft time limits. Additionally,
     it will not enforce the hard time limit if the task is blocking.
+
+.. note::
+
+    The threads pool raises the time limit exceptions inside the thread
+    running the task, so a task blocking in a system call isn't interrupted
+    until the call returns.
 
 
 Changing time limits at run-time

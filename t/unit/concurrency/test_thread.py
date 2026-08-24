@@ -3,7 +3,16 @@ import time
 
 import pytest
 
+import t.skip
+from celery.concurrency import thread
+from celery.exceptions import SoftTimeLimitExceeded
 from celery.utils.functional import noop
+
+
+def spin(seconds):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        pass
 
 
 class test_thread_TaskPool:
@@ -83,3 +92,54 @@ class test_thread_TaskPool:
             if stop_thread is not None and stop_thread.is_alive():
                 stop_thread.join(timeout=5.0)
             x.on_stop()
+
+    @t.skip.if_pypy
+    def test_hard_time_limit(self):
+        x = thread.TaskPool(limit=1, timeout=0.1)
+        exceeded = []
+        try:
+            x.on_apply(spin, (10.0,), {}, noop, noop,
+                       timeout_callback=lambda *a: exceeded.append(a)).wait(timeout=5)
+            assert exceeded == [(False, 0.1)]
+        finally:
+            x.stop()
+
+    @t.skip.if_pypy
+    def test_soft_time_limit(self):
+        x = thread.TaskPool(limit=1)
+        exceeded, caught = [], []
+
+        def catching_task():
+            try:
+                spin(10.0)
+            except SoftTimeLimitExceeded:
+                caught.append(True)
+
+        try:
+            x.on_apply(catching_task, (), {}, noop, noop, soft_timeout=0.1,
+                       timeout_callback=lambda *a: exceeded.append(a)).wait(timeout=5)
+            assert exceeded == [(True, 0.1)]
+            assert caught == [True]
+        finally:
+            x.stop()
+
+    @t.skip.if_pypy
+    def test_soft_time_limit_escalates_to_hard(self):
+        x = thread.TaskPool(limit=1)
+        exceeded = []
+
+        def ignoring_task():
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                try:
+                    spin(10.0)
+                except SoftTimeLimitExceeded:
+                    pass
+
+        try:
+            x.on_apply(ignoring_task, (), {}, noop, noop, timeout=0.4,
+                       soft_timeout=0.1,
+                       timeout_callback=lambda *a: exceeded.append(a)).wait(timeout=5)
+            assert exceeded == [(True, 0.1), (False, 0.4)]
+        finally:
+            x.stop()
